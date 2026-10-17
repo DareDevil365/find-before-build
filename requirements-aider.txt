@@ -1,0 +1,2 @@
+# Optional upstream editing engine, installed in an isolated Python 3.12 environment.
+aider-chat==0.86.2

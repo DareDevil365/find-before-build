@@ -1,0 +1,31 @@
+{
+  "task_spec": "examples/calculator.eval.json",
+  "evaluated_at": "2026-10-17T13:23:57.192922+00:00",
+  "backend": "gemma-api",
+  "engine": "native",
+  "model": "gemma-4-26b-a4b-it",
+  "method": "Same task, model, and acceptance checks in isolated workspaces; baseline first; discovery adds GitHub search and reuse decision.",
+  "arms": [
+    {
+      "name": "baseline_without_skill",
+      "acceptance_passed": true,
+      "time_to_working_seconds": 11.41,
+      "wall_seconds": 11.27,
+      "total_api_tokens": 1965,
+      "written_files": 2,
+      "added_lines": 15
+    },
+    {
+      "name": "with_find_before_build",
+      "acceptance_passed": true,
+      "time_to_working_seconds": 28.618,
+      "wall_seconds": 28.497,
+      "total_api_tokens": 4390,
+      "written_files": 2,
+      "added_lines": 13,
+      "candidate_count": 5,
+      "reuse_decision": "build_fresh"
+    }
+  ],
+  "interpretation": "Both arms passed. Discovery added time and tokens for this trivial task; one task does not establish a general effect."
+}

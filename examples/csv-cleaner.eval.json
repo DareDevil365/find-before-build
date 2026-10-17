@@ -1,0 +1,24 @@
+{
+  "task": "Build a small Python module named csv_cleaner.py. Export normalize_csv(text: str) -> str. Parse CSV using Python's csv module, trim whitespace around each cell, preserve quoted commas, and return CSV with LF line endings and a final newline. Do not alter sample.csv.",
+  "seed_files": {
+    "sample.csv": "name, city\n Ada , \"New York, NY\" \n"
+  },
+  "checks": [
+    [
+      "python",
+      "-c",
+      "from csv_cleaner import normalize_csv; assert normalize_csv('name, city\\n Ada , \\\"New York, NY\\\" \\n') == 'name,city\\nAda,\\\"New York, NY\\\"\\n'"
+    ],
+    [
+      "python",
+      "-c",
+      "from csv_cleaner import normalize_csv; assert normalize_csv('a,b\\n1, 2\\n') == 'a,b\\n1,2\\n'"
+    ],
+    [
+      "python",
+      "-c",
+      "from pathlib import Path; assert Path('sample.csv').read_text(encoding='utf-8') == 'name, city\\n Ada , \\\"New York, NY\\\" \\n'"
+    ]
+  ],
+  "check_timeout_seconds": 10
+}

@@ -1,0 +1,8 @@
+{
+  "task": "Create calculator.py with an add(a, b) function that returns the sum, and README.md with one Python usage example.",
+  "checks": [
+    ["python", "-c", "from calculator import add; assert add(2, 3) == 5; assert add(-4, 7) == 3"],
+    ["python", "-c", "from pathlib import Path; text=Path('README.md').read_text(encoding='utf-8'); assert 'add' in text and 'calculator' in text.lower()"]
+  ],
+  "check_timeout_seconds": 10
+}
