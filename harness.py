@@ -260,6 +260,18 @@ def structural_issues(files: dict[str, str]) -> list[str]:
     return issues[:20]
 
 
+def delivery_issues(task: str, files: dict[str, str]) -> list[str]:
+    """Catch a missing browser entry point for an explicitly requested web deliverable."""
+    if not re.search(r"\b(?:web\s?app|website|webpage|browser[- ]runnable|in (?:the )?browser|frontend)\b", task, re.I):
+        return []
+    names = [name.lower().replace("\\", "/") for name in files]
+    if any(name.endswith((".html", "page.tsx", "page.jsx", "app.tsx", "app.jsx", "app.vue", "app.svelte")) for name in names):
+        return []
+    if any("render_template_string" in content or "text/html" in content for name, content in files.items() if name.endswith((".py", ".js", ".ts"))):
+        return []
+    return ["Browser delivery is missing: write a usable HTML page or frontend entry point, with any needed backend route; a CLI-only script is incomplete"]
+
+
 def planned_files(task: str, workspace: Workspace) -> list[str]:
     """Make Aider's edit scope explicit, especially for small local models."""
     mentioned = re.findall(r"\b[A-Za-z_][A-Za-z0-9_-]*\.(?:py|md|js|ts|tsx|html|css|json|txt|go|rs|java|sql|yaml|yml)\b", task, re.I)
@@ -461,6 +473,9 @@ def run(args: argparse.Namespace) -> dict:
     system = (
         "You are a coding agent operating only in the provided workspace through tools. "
         "Finish the user's task with working code and minimal setup. Use list_files and read_file before overwriting existing work. "
+        "First decide the user-facing entry point, the minimum components needed for one complete user flow, and how that flow can be checked. Build those components together before polishing extras. "
+        "For a browser deliverable, provide a usable page and the backend routes it needs; a terminal-only program is not enough. "
+        "Choose components from the actual request and reuse decision; do not claim a feature exists when only a placeholder was written. "
         "Use write_file to create complete files. "
         "For a software build, write the actual implementation before finishing; documentation alone is incomplete. "
         + ("Commands are disabled for this run; do not request run_command. Finish after writing files and describe checks the user can run. " if args.no_commands else "You may request run_command for checks; it requires terminal approval. ")
@@ -510,7 +525,8 @@ def run(args: argparse.Namespace) -> dict:
             else:
                 empty_replies = 0
             if not reply.tool_calls:
-                issues = structural_issues(snapshot(workspace.root))
+                current_files = snapshot(workspace.root)
+                issues = structural_issues(current_files) + delivery_issues(args.task, current_files)
                 if (not implementation_written(workspace.log, args.task) or issues) and turn + 1 < args.max_turns:
                     messages.append({"role": "assistant", "content": reply.text})
                     detail = "; ".join(issues[:5]) if issues else "the requested implementation is still missing"
@@ -533,7 +549,7 @@ def run(args: argparse.Namespace) -> dict:
         status = classify_aider_result(status, before, after, files, final_text)
     elif status == "finished":
         expected = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_-]*\.(?:py|md|js|ts|tsx|html|css|json|txt|go|rs|java|sql|yaml|yml)\b", args.task, re.I))
-        if any(name not in after for name in expected) or structural_issues(after):
+        if any(name not in after for name in expected) or structural_issues(after) or delivery_issues(args.task, after):
             status = "partial_edit"
     record = {
         "task": args.task, "original_task": original_task, "clarifications": clarifications, "backend": args.backend, "model": args.model, "engine": args.engine, "prepared_files": files,

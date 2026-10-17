@@ -160,6 +160,22 @@ class UiTests(unittest.TestCase):
         result = subprocess.run(["node", "--check", str(script_file)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_web_delivery_and_fast_mode_flags(self) -> None:
+        status, started = self.request("/api/start", {"task": "Create a study app", "backend": "gemini-api", "no_questions": True, "web_app": True})
+        self.assertEqual(status, 200)
+        job = self.server.manager.get(started["id"])
+        args = job.process.args
+        self.assertIn("--no-questions", args)
+        self.assertNotIn("--clarify", args)
+        self.assertIn("Delivery target: Build a browser-runnable web app", args[3])
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline and not job.snapshot()["pending_question"]:
+            time.sleep(0.05)
+        job.answer("Math quizzes")
+        while time.monotonic() < deadline and job.snapshot()["running"]:
+            time.sleep(0.05)
+        self.assertFalse(job.snapshot()["running"])
+
     def test_rejects_unauthorized_and_invalid_requests(self) -> None:
         self.assertEqual(self.request("/api/state?id=missing", token="wrong")[0], 403)
         self.assertEqual(self.request("/api/start", {"task": "x", "backend": "koboldcpp"})[0], 400)

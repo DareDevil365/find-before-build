@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import patch
 
-from harness import choose_decision, classify_aider_result, implementation_written, plan_search, queries_for, select_gemini_api_key, structural_issues
+from harness import choose_decision, classify_aider_result, delivery_issues, implementation_written, plan_search, queries_for, select_gemini_api_key, structural_issues
 from harness_core.backends import Reply
 
 
@@ -54,6 +54,12 @@ class HarnessTests(unittest.TestCase):
         files["script.js"] = "document.body.textContent = 'ok'"
         files["app.py"] = "print('ok')\n"
         self.assertEqual(structural_issues(files), [])
+
+    def test_web_delivery_requires_a_browser_entry_point(self):
+        task = "Build a browser-runnable study buddy web app"
+        self.assertTrue(delivery_issues(task, {"main.py": "print('quiz')"}))
+        self.assertEqual(delivery_issues(task, {"templates/index.html": "<h1>Quiz</h1>", "app.py": "from flask import Flask"}), [])
+        self.assertEqual(delivery_issues("Build a command line CSV tool", {"main.py": "print('done')"}), [])
 
     def test_task_search_terms_drop_scaffolding(self):
         first, second, *_ = queries_for("Build a small Python module named csv_cleaner.py to normalize CSV")
