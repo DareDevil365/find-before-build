@@ -6,7 +6,7 @@ This is a hackathon prototype. Search and scoring are implemented, but a useful 
 
 A [recorded Gemini 2.5 Flash browser demo](demo%27s%20outputs/working-gemini-2.5-flash/demo.webm) shows the harness finding candidates, choosing `build_fresh` for a small counter app, writing the [generated page](demo%27s%20outputs/working-gemini-2.5-flash/index.html), and clicking its buttons. See the [demo notes](demo%27s%20outputs/README.md) for the measured run and limits.
 
-The [study-buddy example](demo%27s%20outputs/study-buddy-web/PROJECT_GUIDE.md) shows a browser adapter around a Gemini-generated math quiz. Its original model output was terminal-only, so the adapter and Gemini chat endpoint were added afterward; the guide distinguishes those parts.
+Generated files are saved under the ignored `runs/ui-*/workspace` folders. A build is marked complete only after the harness checks its expected browser entry point and obvious frontend/backend contract mismatches. These static checks do not prove the generated app works end to end.
 
 Observed so far: the official `skills-ref` validator accepted the skill; live GitHub search and scoring ran; the standard-library test suite passes with one Windows symlink case skipped. In a small local Hermes smoke task, the harness wrote `hello.py` and `README.md` in three model calls, 24.09 seconds, and 2,231 reported tokens after a retry. An earlier no-retry attempt produced no files. A full discovery-to-code run with Gemma 4 completed and passed an independent behavior check; details below.
 
@@ -46,7 +46,7 @@ python harness.py "Build a CSV cleaner" --workspace .\demo-workspace --engine na
 
 You may put `GITHUB_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or numbered `GEMINI_API_KEY_N` names in this project's `.env` file instead of setting environment variables in every shell. The loader accepts only those credential-name patterns and does not replace values already set in the environment. `.env` is git-ignored; keep it private and do not put tokens in task prompts or run records.
 
-For parallel Gemma runs, `.env` can also contain `GEMINI_API_KEY_1` and `GEMINI_API_KEY_2`. Start separate workspaces with `--api-key-env GEMINI_API_KEY_1` and `--api-key-env GEMINI_API_KEY_2`; the option takes the environment variable **name**, never its value. Without the option, the harness uses the first available supported key. API quotas and latency may still limit concurrent requests.
+`.env` can contain `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2`, and further numbered Gemini keys. Gemini is the default; Gemma 4 and local KoboldCpp remain selectable. The requested Gemini 2.5 Flash model is tried across keys first; if unavailable, the harness can use 3.8 Flash. HTTP 429 and temporary 503 errors move to another key. An explicit `--api-key-env GEMINI_API_KEY_2` pins a run to that environment variable **name**, never its value. Per-key token usage and API outcomes are recorded in ignored `runs/api-usage/*.jsonl` and available from the local `/api/usage` endpoint; the main UI does not display them. Remaining credits are unknown because the API response does not provide a reliable balance. Keys in one Google project may share quota, so rotation cannot guarantee more capacity.
 
 ## Gemma 4 backend
 

@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ui import JobManager, create_server  # noqa: E402
+from ui import JobManager, create_server, gemini_usage_summary  # noqa: E402
 
 
 FAKE_HARNESS = r'''import json
@@ -46,6 +46,20 @@ print("Built output.txt", flush=True)
 
 
 class UiTests(unittest.TestCase):
+    def test_usage_ledger_marks_recovery_only_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".env").write_text("GEMINI_API_KEY_1=secret\n", encoding="utf-8")
+            folder = root / "runs" / "api-usage"
+            folder.mkdir(parents=True)
+            events = [
+                {"at": "2026-10-17T01:00:00Z", "key": "GEMINI_API_KEY_1", "status": "limited_429", "total_tokens": 0},
+                {"at": "2026-10-17T02:00:00Z", "key": "GEMINI_API_KEY_1", "status": "success", "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            ]
+            (folder / "one.jsonl").write_text("\n".join(json.dumps(item) for item in events), encoding="utf-8")
+            row = next(item for item in gemini_usage_summary(root)["keys"] if item["key"] == "GEMINI_API_KEY_1")
+            self.assertEqual((row["status"], row["total_tokens"], row["remaining_credits"]), ("available_on_last_call", 15, None))
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

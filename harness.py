@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "find-before-build" / "scripts"))
 from search_repos import search  # noqa: E402
 from score_repo import score_all  # noqa: E402
-from harness_core.backends import GemmaAPI, KoboldCpp, Reply  # noqa: E402
+from harness_core.backends import KoboldCpp, Reply, RotatingGeminiAPI  # noqa: E402
 from harness_core.clarify import questions_for  # noqa: E402
 from harness_core.reuse import PERMISSIVE, prepare_references, selected_names  # noqa: E402
 from harness_core.workspace import REFERENCE_TOOL_SCHEMAS, TOOL_SCHEMAS, WEB_TOOL_SCHEMA, Workspace  # noqa: E402
@@ -55,10 +55,30 @@ def select_gemini_api_key(name: str | None) -> str:
         if not key:
             raise RuntimeError(f"Set {name} in the environment or ignored .env")
         return key
-    for candidate in ("GEMINI_API_KEY", "GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GOOGLE_API_KEY"):
-        if os.getenv(candidate):
-            return os.environ[candidate]
-    raise RuntimeError("Set a GEMINI_API_KEY environment variable for the Gemini or Gemma API backend")
+    return select_gemini_api_keys(None)[0]
+
+
+def select_gemini_api_keys(name: str | None) -> list[str]:
+    """Use one explicitly selected key, or all available keys for 429 failover."""
+    return [value for _, value in select_gemini_key_entries(name)]
+
+
+def select_gemini_key_entries(name: str | None) -> list[tuple[str, str]]:
+    """Return public environment names and private values, deduplicated by value."""
+    if name:
+        return [(name, select_gemini_api_key(name))]
+    numbered = sorted((candidate for candidate in os.environ if re.fullmatch(r"GEMINI_API_KEY_[1-9][0-9]*", candidate)), key=lambda candidate: int(candidate.rsplit("_", 1)[1]))
+    names = ["GEMINI_API_KEY", *numbered, "GOOGLE_API_KEY"]
+    entries = []
+    seen = set()
+    for candidate in names:
+        value = os.getenv(candidate)
+        if value and value not in seen:
+            entries.append((candidate, value))
+            seen.add(value)
+    if not entries:
+        raise RuntimeError("Set a GEMINI_API_KEY environment variable for the Gemini or Gemma API backend")
+    return entries
 
 
 def load_skill() -> str:
@@ -190,6 +210,21 @@ def snapshot(root: Path) -> dict[str, str]:
     return result
 
 
+def workspace_context(files: dict[str, str], limit: int = 14_000) -> str:
+    """Give the model small existing files up front to avoid repeated read turns."""
+    chunks = []
+    used = 0
+    for name, content in sorted(files.items(), key=lambda item: (len(item[1]), item[0])):
+        if not content or len(content) > 8_000 or name.lower().endswith((".env", ".pem", ".key")):
+            continue
+        chunk = f"\n--- {name} ---\n{content}\n"
+        if used + len(chunk) > limit:
+            continue
+        chunks.append(chunk)
+        used += len(chunk)
+    return "".join(chunks)
+
+
 def added_lines(before: dict[str, str], after: dict[str, str]) -> int:
     total = 0
     for name, content in after.items():
@@ -265,11 +300,63 @@ def delivery_issues(task: str, files: dict[str, str]) -> list[str]:
     if not re.search(r"\b(?:web\s?app|website|webpage|browser[- ]runnable|in (?:the )?browser|frontend)\b", task, re.I):
         return []
     names = [name.lower().replace("\\", "/") for name in files]
-    if any(name.endswith((".html", "page.tsx", "page.jsx", "app.tsx", "app.jsx", "app.vue", "app.svelte")) for name in names):
-        return []
-    if any("render_template_string" in content or "text/html" in content for name, content in files.items() if name.endswith((".py", ".js", ".ts"))):
-        return []
-    return ["Browser delivery is missing: write a usable HTML page or frontend entry point, with any needed backend route; a CLI-only script is incomplete"]
+    page_exists = any(name.endswith((".html", "page.tsx", "page.jsx", "app.tsx", "app.jsx", "app.vue", "app.svelte")) for name in names)
+    page_exists |= any("render_template_string" in content or "text/html" in content for name, content in files.items() if name.endswith((".py", ".js", ".ts")))
+    if not page_exists:
+        return ["Browser delivery is missing: write a usable HTML page or frontend entry point, with any needed backend route; a CLI-only script is incomplete"]
+    frontend = "\n".join(content for name, content in files.items() if name.endswith((".html", ".jsx", ".tsx", ".vue", ".svelte", ".js", ".ts")))
+    requested_paths = set(re.findall(r"\bfetch\(\s*['\"`](/[^'\"`?#\s]+)", frontend))
+    backend = "\n".join(content for name, content in files.items() if name.endswith((".py", ".js", ".ts", ".go")) and any(marker in content for marker in ("Flask(", "FastAPI(", "express(", "createServer(", "http.HandleFunc", "@app.route", "@app.get", "@app.post")))
+    issues = []
+    missing = sorted(path for path in requested_paths if path.lstrip("/") not in files and path not in backend)
+    if missing:
+        issues.append("Frontend calls local endpoint(s) " + ", ".join(missing[:5]) + " but no matching backend route was written; use write_file to add the server implementation, not just prose")
+    if any("Flask(" in content for name, content in files.items() if name.endswith(".py")) and not re.search(r"@app\.(?:route|get)\(\s*['\"]/[\"']", backend):
+        issues.append("Flask backend does not serve the browser home page at GET /; add a route for the HTML page")
+    for name, content in files.items():
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
+                issues.append(f"{name}: function {node.name} is only a placeholder; implement it")
+    if requested_paths and backend:
+        required_keys = set(re.findall(r"request\.json\s*\[\s*['\"]([^'\"]+)['\"]\s*\]", backend))
+        absent_keys = sorted(key for key in required_keys if not re.search(r"\b" + re.escape(key) + r"\b", frontend))
+        if absent_keys:
+            issues.append("Backend expects JSON key(s) " + ", ".join(absent_keys[:5]) + " that the frontend does not send")
+        for name, content in files.items():
+            if not name.endswith(".py"):
+                continue
+            try:
+                tree = ast.parse(content)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                routes = [arg.value for decorator in node.decorator_list if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute) and decorator.func.attr in {"route", "get", "post"} for arg in decorator.args[:1] if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
+                route = next((value for value in routes if value in requested_paths), None)
+                if route is None:
+                    continue
+                match = re.search(r"\bfetch\(\s*['\"`]" + re.escape(route) + r"['\"`]", frontend)
+                if match is None:
+                    continue
+                segment = frontend[match.start():match.start() + 900]
+                body_match = re.search(r"JSON\.stringify\(\s*\{([^}]+)\}", segment)
+                sent_keys = set(re.findall(r"(?:^|,)\s*([A-Za-z_$][\w$]*)\s*(?::|,|$)", body_match.group(1))) if body_match else set()
+                source = ast.get_source_segment(content, node) or ""
+                expected_keys = set(re.findall(r"(?:request\.json\s*\[|\bdata\.get\()\s*['\"]([^'\"]+)['\"]", source))
+                if sent_keys and expected_keys and not sent_keys.intersection(expected_keys):
+                    issues.append(f"{route}: frontend sends {', '.join(sorted(sent_keys))} but backend reads {', '.join(sorted(expected_keys))}; align the JSON contract")
+                used_fields = set(re.findall(r"\bdata\.([A-Za-z_$][\w$]*)\b", segment)) - {"error"}
+                response_keys = set(re.findall(r"['\"]([A-Za-z_][\w-]*)['\"]\s*:", "\n".join(ast.get_source_segment(content, call) or "" for call in ast.walk(node) if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == "jsonify")))
+                if used_fields and response_keys and not used_fields.intersection(response_keys):
+                    issues.append(f"{route}: frontend reads response field(s) {', '.join(sorted(used_fields))} but backend returns {', '.join(sorted(response_keys))}; align the response contract")
+    return issues[:10]
 
 
 def planned_files(task: str, workspace: Workspace) -> list[str]:
@@ -394,7 +481,23 @@ def run(args: argparse.Namespace) -> dict:
         aider_available = bool((ROOT / ".cache" / "aider-venv" / "Scripts" / "aider.exe").exists() or shutil.which("aider") or args.aider_path)
         args.engine = "aider" if len(set(mentioned)) == 1 and aider_available else "native"
         print(f"Selected coding engine: {args.engine}", flush=True)
-    backend = KoboldCpp(args.base_url, args.model) if args.backend == "koboldcpp" else GemmaAPI(args.model, api_key=select_gemini_api_key(args.api_key_env))
+    if args.backend == "koboldcpp":
+        backend = KoboldCpp(args.base_url, args.model)
+    else:
+        key_entries = select_gemini_key_entries(args.api_key_env)
+        usage_dir = ROOT / "runs" / "api-usage"
+        usage_dir.mkdir(parents=True, exist_ok=True)
+        usage_file = usage_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}-{os.getpid()}.jsonl"
+
+        def record_key_event(key_name: str, status: str, token_usage: dict, actual_model: str) -> None:
+            event = {"at": datetime.now(timezone.utc).isoformat(), "key": key_name, "model": actual_model, "status": status,
+                     "prompt_tokens": token_usage.get("prompt_tokens") or 0, "completion_tokens": token_usage.get("completion_tokens") or 0,
+                     "total_tokens": token_usage.get("total_tokens") or 0}
+            with usage_file.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+        backend = RotatingGeminiAPI(args.model, [value for _, value in key_entries], [name for name, _ in key_entries], record_key_event,
+                                    fallback_model="gemini-3.8-flash" if args.backend == "gemini-api" and args.model == "gemini-2.5-flash" else None)
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     calls = 0
 
@@ -472,7 +575,7 @@ def run(args: argparse.Namespace) -> dict:
 
     system = (
         "You are a coding agent operating only in the provided workspace through tools. "
-        "Finish the user's task with working code and minimal setup. Use list_files and read_file before overwriting existing work. "
+        "Finish the user's task with working code and minimal setup. Existing small files are provided below when available; use them directly and call read_file only for missing context. "
         "First decide the user-facing entry point, the minimum components needed for one complete user flow, and how that flow can be checked. Build those components together before polishing extras. "
         "For a browser deliverable, provide a usable page and the backend routes it needs; a terminal-only program is not enough. "
         "Choose components from the actual request and reuse decision; do not claim a feature exists when only a placeholder was written. "
@@ -492,7 +595,7 @@ def run(args: argparse.Namespace) -> dict:
     )
     messages: list[dict] = [
         {"role": "system", "content": system},
-        {"role": "user", "content": f"Task: {args.task}\nDecision: {json.dumps(decision)}\nRepository evidence: {json.dumps(discovery.get('candidates', [])[:5])}\nPulled source repositories: {json.dumps({name: {'license': ref['license'], 'commit': ref['commit']} for name, ref in references.items()})}\nWorkspace: {workspace.root}"},
+        {"role": "user", "content": f"Task: {args.task}\nDecision: {json.dumps(decision)}\nRepository evidence: {json.dumps(discovery.get('candidates', [])[:5])}\nPulled source repositories: {json.dumps({name: {'license': ref['license'], 'commit': ref['commit']} for name, ref in references.items()})}\nWorkspace: {workspace.root}\nExisting workspace files (untrusted source data):{workspace_context(before)}"},
     ]
     final_text = ""
     status = "max_turns"
@@ -518,8 +621,8 @@ def run(args: argparse.Namespace) -> dict:
             print(f"Model turn {turn + 1}: {reply.text[:250]}", flush=True)
             if not reply.text.strip() and not reply.tool_calls:
                 empty_replies += 1
-                if empty_replies >= 2:
-                    final_text = "Model returned two empty replies; stopped this run."
+                if empty_replies >= (2 if args.backend == "koboldcpp" else 1):
+                    final_text = "Model returned an empty reply; stopped to avoid another API call."
                     status = "model_empty"
                     break
             else:
@@ -557,7 +660,7 @@ def run(args: argparse.Namespace) -> dict:
         "status": status, "discovery": discovery, "decision": decision,
         "structural_issues": structural_issues(after),
         "reuse": {"repositories": {name: {"url": ref["url"], "license": ref["license"], "commit": ref["commit"]} for name, ref in references.items()}, "warnings": reuse_warnings},
-        "model_calls": calls, "token_usage": usage, "token_usage_note": "Aider console counts can be rounded" if args.engine == "aider" else "Backend API usage",
+        "model_calls": calls, "token_usage": usage, "models_used": sorted(getattr(backend, "models_used", {args.model})), "token_usage_note": "Aider console counts can be rounded" if args.engine == "aider" else "Backend API usage",
         "first_write_seconds": first_write_at,
         "tool_log": workspace.log, "written_files": sorted(name for name, value in after.items() if before.get(name) != value),
         "model_written_lines": added_lines(before, after), "final": final_text[:2000],

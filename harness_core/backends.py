@@ -35,7 +35,9 @@ def post_json(url: str, body: dict, headers: dict, timeout: float = 120) -> dict
                 return json.load(response)
         except HTTPError as exc:
             detail = exc.read(500).decode("utf-8", "replace")
-            if exc.code in {429, 500, 502, 503} and attempt < 2:
+            if exc.code in {429, 503}:
+                raise RuntimeError(f"Model API HTTP {exc.code}: {detail}") from exc
+            if exc.code in {500, 502} and attempt < 2:
                 match = re.search(r"retry in\s+([\d.]+)s", detail, re.I)
                 delay = min(40, max(2 ** attempt, float(match.group(1)) + 1 if match else 2 ** attempt))
                 print(f"Model API HTTP {exc.code}; retrying in {delay:.1f}s", file=sys.stderr, flush=True)
@@ -136,3 +138,64 @@ class GemmaAPI:
                 calls.append(ToolCall(f"gemma_call_{i}", str(fn.get("name") or ""), fn.get("args") or {}))
         usage = raw.get("usageMetadata") or {}
         return Reply("\n".join(str(p["text"]) for p in parts if "text" in p), calls, {"prompt_tokens": usage.get("promptTokenCount"), "completion_tokens": usage.get("candidatesTokenCount"), "total_tokens": usage.get("totalTokenCount")}, parts)
+
+
+class RotatingGeminiAPI:
+    """Prefer one model across keys, then try a compatible fallback model."""
+
+    def __init__(self, model: str, api_keys: list[str], key_names: list[str] | None = None, on_event=None, fallback_model: str | None = None):
+        if not api_keys:
+            raise RuntimeError("Set a GEMINI_API_KEY environment variable")
+        unique = list(dict.fromkeys(api_keys))
+        self.clients = [GemmaAPI(model, api_key=key) for key in unique]
+        self.key_names = [key_names[api_keys.index(key)] if key_names else f"key_{index + 1}" for index, key in enumerate(unique)]
+        self.on_event = on_event
+        self.primary_model = model
+        self.fallback_model = fallback_model
+        self.models_used: set[str] = set()
+        self.index = 0
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None) -> Reply:
+        last_error = None
+        order = [(self.index + offset) % len(self.clients) for offset in range(len(self.clients))]
+        preferred_model = self.clients[self.index].model
+        fallback_candidates = []
+
+        def attempt(index: int, model: str) -> tuple[Reply | None, str | None, RuntimeError | None]:
+            self.clients[index].model = model
+            try:
+                reply = self.clients[index].chat(messages, tools)
+            except RuntimeError as exc:
+                if "HTTP 429" in str(exc):
+                    status = "limited_429"
+                elif "HTTP 503" in str(exc):
+                    status = "unavailable_503"
+                elif "HTTP 404" in str(exc) and "model" in str(exc).lower():
+                    status = "model_unavailable_404"
+                else:
+                    raise
+                if self.on_event:
+                    self.on_event(self.key_names[index], status, {}, model)
+                return None, status, exc
+            self.index = index
+            self.models_used.add(model)
+            if self.on_event:
+                status = "success" if reply.text.strip() or reply.tool_calls else "empty_reply"
+                self.on_event(self.key_names[index], status, reply.usage, model)
+            return reply, None, None
+
+        for index in order:
+            reply, status, error = attempt(index, preferred_model)
+            if reply is not None:
+                return reply
+            last_error = error
+            if status in {"model_unavailable_404", "unavailable_503"}:
+                fallback_candidates.append(index)
+        alternate_model = self.fallback_model if preferred_model == self.primary_model else self.primary_model
+        if alternate_model and alternate_model != preferred_model:
+            for index in fallback_candidates:
+                reply, _, error = attempt(index, alternate_model)
+                if reply is not None:
+                    return reply
+                last_error = error
+        raise RuntimeError("No configured Gemini key/model completed the request; see per-key status in the UI") from last_error

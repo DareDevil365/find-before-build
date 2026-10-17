@@ -1,10 +1,12 @@
 """Check both model APIs' wire-format normalization without network calls."""
 
 import json
+from io import BytesIO
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
-from harness_core.backends import GemmaAPI, KoboldCpp
+from harness_core.backends import GemmaAPI, KoboldCpp, post_json
 
 
 class KoboldTests(unittest.TestCase):
@@ -19,6 +21,15 @@ class KoboldTests(unittest.TestCase):
 
 
 class GemmaTests(unittest.TestCase):
+    def test_429_rotates_without_waiting_or_retrying_same_key(self):
+        error = HTTPError("https://example.test", 429, "Too Many Requests", {}, BytesIO(b'{"error":"rate limit"}'))
+        with patch("harness_core.backends.urlopen", side_effect=error) as send, patch("harness_core.backends.time.sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "HTTP 429"):
+                post_json("https://example.test", {}, {})
+        error.close()
+        self.assertEqual(send.call_count, 1)
+        sleep.assert_not_called()
+
     def test_convert_full_tool_loop(self):
         messages = [
             {"role": "system", "content": "Follow task"},

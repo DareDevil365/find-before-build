@@ -15,6 +15,7 @@ import ast
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -28,6 +29,39 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 20_000
 MAX_PREVIEW = 200_000
+
+
+def gemini_usage_summary(root: Path) -> dict:
+    """Report observed per-key usage and 429s; the API does not expose balance."""
+    names = {name for name in os.environ if re.fullmatch(r"GEMINI_API_KEY(?:_[1-9][0-9]*)?", name)}
+    env_file = root / ".env"
+    if env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            match = re.match(r"\s*(GEMINI_API_KEY(?:_[1-9][0-9]*)?)\s*=", line)
+            if match:
+                names.add(match.group(1))
+    rows = {name: {"key": name, "status": "not_checked", "model": None, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "last_event": None, "remaining_credits": None} for name in names}
+    folder = root / "runs" / "api-usage"
+    events = []
+    for path in folder.glob("*.jsonl") if folder.exists() else []:
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                event = json.loads(line)
+                if isinstance(event, dict) and event.get("key") in rows and event.get("status") in {"success", "empty_reply", "limited_429", "unavailable_503", "model_unavailable_404"}:
+                    events.append(event)
+        except (OSError, ValueError):
+            continue
+    for event in sorted(events, key=lambda item: str(item.get("at", ""))):
+        row = rows[event["key"]]
+        row["status"] = {"success": "available_on_last_call", "empty_reply": "empty_reply", "limited_429": "limited_429", "unavailable_503": "unavailable_503", "model_unavailable_404": "model_unavailable_404"}[event["status"]]
+        row["model"] = event.get("model")
+        row["last_event"] = event.get("at")
+        for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            row[field] += event.get(field, 0) if isinstance(event.get(field), int) else 0
+    for row in rows.values():
+        row["other_tokens"] = max(0, row["total_tokens"] - row["prompt_tokens"] - row["completion_tokens"])
+    return {"keys": sorted(rows.values(), key=lambda row: (int(row["key"].rsplit("_", 1)[1]) if re.search(r"_[0-9]+$", row["key"]) else 0, row["key"])), "remaining_credits": None,
+            "note": "Token totals are reported usage since tracking began. Gemini does not provide remaining credits here. A 429 is rechecked on the next real build call; no paid probes run in the background."}
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -418,7 +452,7 @@ details{margin-top:21px;border-top:1px solid var(--line);padding-top:13px}summar
 <main class="shell"><header class="topbar"><div class="brand"><div class="mark" aria-hidden="true"><span>F/B</span></div><div><div class="eyebrow">Project intelligence / local console</div><div class="brandname">FIND BEFORE BUILD</div></div></div><div class="topmeta"><span class="led" aria-hidden="true"></span><span>LOCAL SYSTEM READY</span></div></header>
 <div class="hero"><div><div class="eyebrow">01 / DISCOVER &nbsp; 02 / DECIDE &nbsp; 03 / BUILD</div><h1>Build smarter.<br><span>Start with what exists.</span></h1><p>Describe your idea. The harness checks GitHub for reusable work, explains its choice, then builds with your selected model.</p></div><div class="orbit" aria-hidden="true"><b>F / B</b></div></div>
 <section><div class="sectionhead"><h2>Mission brief</h2><span class="tag">Input / 001</span></div><p class="hint">Be specific about the platform, features, and what should work when the build is done.</p><label class="eyebrow" for="task">Your request</label><textarea id="task" placeholder="Build a web calculator with keyboard input and a clean interface..."></textarea>
-<div class="controls"><div><label for="backend">Model</label><select id="backend"><option value="gemini-api">Gemini 2.5 Flash</option><option value="gemma-api">Gemma 4 API</option><option value="koboldcpp">Local model (KoboldCpp)</option></select><label class="fastoption"><input id="webApp" type="checkbox" checked> Build a web app with a localhost link</label><label class="fastoption"><input id="noQuestions" type="checkbox"> Fast mode: build with sensible defaults, without pausing for questions</label></div><div class="row"><button id="lastBuild" type="button" class="hidden">View last build</button><button id="newRequest" type="button" class="hidden">New request</button><button id="start" type="button" class="primary">Find and build →</button></div></div></section>
+<div class="controls"><div><label for="backend">Model</label><select id="backend"><option value="gemini-api">Gemini (2.5 / 3.8 Flash auto)</option><option value="gemma-api">Gemma 4 API</option><option value="koboldcpp">Local model (KoboldCpp)</option></select><label class="fastoption"><input id="webApp" type="checkbox" checked> Build a web app with a localhost link</label><label class="fastoption"><input id="noQuestions" type="checkbox"> Fast mode: build with sensible defaults, without pausing for questions</label></div><div class="row"><button id="lastBuild" type="button" class="hidden">View last build</button><button id="newRequest" type="button" class="hidden">New request</button><button id="start" type="button" class="primary">Find and build →</button></div></div></section>
 <section id="question" class="hidden"><div class="sectionhead"><h2>Clarification needed</h2><span class="tag">Human input</span></div><p id="questionText"></p><div class="row"><input id="answer" aria-label="Your answer" placeholder="Type your answer"><button id="sendAnswer" type="button" class="primary">Continue →</button></div></section>
 <div class="dashboard"><section><div class="sectionhead"><h2>Build telemetry</h2><span id="status" role="status">Ready</span></div><ol class="steps" id="steps"><li>Clarify</li><li>Search</li><li>Choose</li><li>Build</li><li>Finish</li></ol><div id="stage">Ready for a request</div><p id="detail">Launch a mission to see each stage in real time.</p><details><summary>Open detailed activity log</summary><pre id="logs">Your build log will appear here.</pre></details></section>
 <section><div class="sectionhead"><h2>Repository intelligence</h2><span class="tag">GitHub / scan</span></div><p id="repoNote">Search results will appear here. A green outline marks a repository chosen for reuse.</p><div id="decisionReason" class="decision"></div><div id="repos" class="reposlist"></div></section></div>
@@ -497,6 +531,9 @@ def create_server(root: Path = ROOT, host: str = "127.0.0.1", port: int = 8765) 
             if path.path == "/api/current":
                 current = manager.current()
                 self._send(200, {"id": current.id if current else None, "running": current.snapshot()["running"] if current else False})
+                return
+            if path.path == "/api/usage":
+                self._send(200, gemini_usage_summary(root))
                 return
             args = parse_qs(path.query)
             try:
