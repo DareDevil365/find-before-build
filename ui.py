@@ -51,6 +51,7 @@ class Job:
     used: list[str] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
     quality: str = "unknown"
+    discovery_error: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> dict:
@@ -70,6 +71,7 @@ class Job:
                 "used": self.used,
                 "queries": self.queries,
                 "quality": self.quality,
+                "discovery_error": self.discovery_error,
                 "pending_question": self.pending_question,
                 "lines": self.lines[-400:],
                 "result": self.result,
@@ -103,6 +105,40 @@ class JobManager:
         self.root = root
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
+        self._restore_latest_completed()
+
+    def _restore_latest_completed(self) -> None:
+        runs = self.root / "runs"
+        for run_dir in sorted(runs.glob("ui-*") if runs.exists() else [], key=lambda path: path.name, reverse=True):
+            record = run_dir / "record.json"
+            workspace = run_dir / "workspace"
+            if not record.is_file() or not workspace.is_dir():
+                continue
+            try:
+                result = json.loads(record.read_text(encoding="utf-8"))
+                if not isinstance(result, dict):
+                    continue
+                decision = result.get("decision") or {}
+                selected = decision.get("repositories") or ([decision["repository"]] if decision.get("repository") else [])
+                discovery = result.get("discovery") or {}
+                error = str(discovery.get("error", ""))
+                job = Job(run_dir.name[3:], str(result.get("original_task") or result.get("task") or ""), str(result.get("backend") or ""), workspace, record)
+                job.result = result
+                job.exit_code = 0 if result.get("status") == "finished" else 2
+                job.stage = "complete"
+                job.detail = "Build ended: " + str(result.get("status", "unknown"))
+                job.lines = ["Restored the latest completed build after the UI server restarted."]
+                job.candidates = discovery.get("candidates") or []
+                job.quality = discovery.get("quality") or ("unavailable" if discovery.get("status") == "unavailable" else "unknown")
+                job.discovery_error = "GitHub API rate limit exceeded" if "rate limit" in error.lower() else error[:160]
+                job.decision = decision
+                job.selected = selected
+                job.used = list((result.get("reuse") or {}).get("repositories") or {})
+                job.queries = discovery.get("queries") or []
+                self.jobs[job.id] = job
+                break
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
 
     def start(self, task: str, backend: str) -> Job:
         task = task.strip()
@@ -153,7 +189,7 @@ class JobManager:
                         event = json.loads(line[len("@@EVENT:"):])
                         if isinstance(event, dict):
                             with job.lock:
-                                for key in ("stage", "detail", "candidates", "decision", "selected", "used", "queries", "quality"):
+                                for key in ("stage", "detail", "candidates", "decision", "selected", "used", "queries", "quality", "discovery_error"):
                                     if key in event:
                                         setattr(job, key, event[key])
                     except (json.JSONDecodeError, TypeError):
@@ -187,7 +223,8 @@ class JobManager:
                     job.detail = "Build ended: " + str(result.get("status", "unknown"))
                     discovery = result.get("discovery") or {}
                     job.candidates = discovery.get("candidates", job.candidates)
-                    job.quality = discovery.get("quality", job.quality)
+                    job.quality = discovery.get("quality") or ("unavailable" if discovery.get("status") == "unavailable" else job.quality)
+                    job.discovery_error = "GitHub API rate limit exceeded" if "rate limit" in str(discovery.get("error", "")).lower() else str(discovery.get("error", ""))[:160]
                     job.decision = result.get("decision", job.decision)
                     job.used = list((result.get("reuse") or {}).get("repositories") or {})
         except Exception as exc:  # keep the browser informed if the reader fails
@@ -241,10 +278,10 @@ async function api(path,options={}){let r=await fetch(path,{...options,headers:{
 const stages=['clarifying','searching','deciding','coding','complete'];
 function showProgress(s){let index=stages.indexOf(s.stage);if(s.stage==='choosing')index=2;if(s.stage==='starting')index=-1;for(let [n,li] of [...$('steps').children].entries()){li.className=n<index?'done':n===index?'active':''}let names={starting:'Starting',clarifying:'Clarifying the request',searching:'Searching GitHub',choosing:'Comparing repositories',deciding:'Making a reuse decision',coding:'Building the project',complete:'Run finished'};$('stage').textContent=names[s.stage]||'Working';$('detail').textContent=s.detail||''}
 function showRepos(s){let repos=$('repos');repos.replaceChildren();let selected=new Set(s.selected||[]),used=new Set(s.used||[]),decision=s.decision;
-let note=s.quality==='metadata_only'?'GitHub limited README or issue checks; these rankings use metadata only.':s.quality==='unavailable'?'GitHub discovery was unavailable.':'A green outline marks a repository chosen for reuse.';$('repoNote').textContent=note;
+let note=s.quality==='metadata_only'?'GitHub limited README or issue checks; these rankings use metadata only.':s.quality==='cached_unverified'?'Fresh GitHub search failed; showing recent related cached results. Verify them before reuse.':s.quality==='unavailable'?'GitHub discovery failed: '+(s.discovery_error||'unknown cause')+'. No repositories were checked in this run.':'A green outline marks a repository chosen for reuse.';$('repoNote').textContent=note;
 $('decisionReason').textContent=decision?(decision.action==='build_fresh'?'Decision: build fresh. No repository was chosen. ':'Decision: '+decision.action+'. ')+(decision.reason||''):'';
 for(let item of s.candidates||[]){let card=document.createElement('div');card.className='repo'+(selected.has(item.name)?' chosen':'');let title=document.createElement('a');if(/^https:\/\/github\.com\//.test(item.url||'')){title.href=item.url;title.target='_blank';title.rel='noopener noreferrer'}title.textContent=item.name;card.append(title);if(selected.has(item.name)){let badge=document.createElement('span');badge.className='badge';badge.textContent=used.has(item.name)?'Source loaded':'Chosen for reuse';card.append(badge)}let meta=document.createElement('small');meta.textContent='Score '+item.score+' · License '+item.license;card.append(meta);if(item.flags?.length){let flags=document.createElement('p');flags.textContent=item.flags.join(' · ');card.append(flags)}repos.append(card)}
-if(!s.candidates?.length){let empty=document.createElement('p');empty.textContent=s.running?'Waiting for GitHub results...':'No repository results recorded.';repos.append(empty)}}
+if(!s.candidates?.length){let empty=document.createElement('p');empty.textContent=s.quality==='unavailable'?'No repository results; discovery failed.':s.stage==='searching'||s.stage==='clarifying'?'Waiting for GitHub results...':'No repository results recorded.';repos.append(empty)}}
 async function start(){if(busy)return;try{let j=await api('/api/start',{method:'POST',body:JSON.stringify({task:$('task').value,backend:$('backend').value})});job=j.id;busy=true;$('start').disabled=true;$('status').textContent='Starting...';$('logs').textContent='';$('files').replaceChildren();poll()}catch(e){$('status').textContent=e.message}}
 async function sendAnswer(){try{await api('/api/answer',{method:'POST',body:JSON.stringify({id:job,answer:$('answer').value})});$('answer').value='';$('question').classList.add('hidden');lastQuestion=null}catch(e){$('status').textContent=e.message}}
 async function poll(){if(!job)return;try{let s=await api('/api/state?id='+encodeURIComponent(job));let label=s.running?'Running':(s.result?.status|| (s.error?'Error':'Exited '+s.exit_code));$('status').textContent=label+(s.error?' - '+s.error:'');$('logs').textContent=s.lines.join('\n');$('logs').scrollTop=$('logs').scrollHeight;

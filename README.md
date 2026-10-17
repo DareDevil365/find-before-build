@@ -4,6 +4,8 @@ A small coding harness that investigates reusable GitHub projects before asking 
 
 This is a hackathon prototype. Search and scoring are implemented, but a useful reuse decision still depends on the task and available evidence. No speed or quality improvement is claimed without a measured comparison.
 
+A [recorded Gemini 2.5 Flash browser demo](demo%27s%20outputs/working-gemini-2.5-flash/demo.webm) shows the harness finding candidates, choosing `build_fresh` for a small counter app, writing the [generated page](demo%27s%20outputs/working-gemini-2.5-flash/index.html), and clicking its buttons. See the [demo notes](demo%27s%20outputs/README.md) for the measured run and limits.
+
 Observed so far: the official `skills-ref` validator accepted the skill; live GitHub search and scoring ran; the standard-library test suite passes with one Windows symlink case skipped. In a small local Hermes smoke task, the harness wrote `hello.py` and `README.md` in three model calls, 24.09 seconds, and 2,231 reported tokens after a retry. An earlier no-retry attempt produced no files. A full discovery-to-code run with Gemma 4 completed and passed an independent behavior check; details below.
 
 Aider 0.86.2 completed focused edits through local KoboldCpp and passed independent assertions. It sometimes fails to apply all edits on multi-file tasks, so automatic engine selection uses it for one explicitly named file and uses the native tool loop for larger tasks. Aider remains available explicitly with `--engine aider`. The harness reports incomplete Aider edits instead of treating its exit code alone as success.

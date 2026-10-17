@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Counter</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f4f4f4;
+        }
+        .counter-container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        #count-display {
+            font-size: 3em;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        .buttons button {
+            font-size: 1em;
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .buttons button.increment {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .buttons button.increment:hover {
+            background-color: #45a049;
+        }
+        .buttons button.decrement {
+            background-color: #f44336;
+            color: white;
+        }
+        .buttons button.decrement:hover {
+            background-color: #da190b;
+        }
+        .buttons button.reset {
+            background-color: #008CBA;
+            color: white;
+        }
+        .buttons button.reset:hover {
+            background-color: #007bb5;
+        }
+    </style>
+</head>
+<body>
+    <div class="counter-container">
+        <h1>Counter App</h1>
+        <div id="count-display">0</div>
+        <div class="buttons">
+            <button class="increment" onclick="increment()">Increment</button>
+            <button class="decrement" onclick="decrement()">Decrement</button>
+            <button class="reset" onclick="reset()">Reset</button>
+        </div>
+    </div>
+
+    <script>
+        let count = 0;
+        const countDisplay = document.getElementById('count-display');
+
+        function updateDisplay() {
+            countDisplay.textContent = count;
+        }
+
+        function increment() {
+            count++;
+            updateDisplay();
+        }
+
+        function decrement() {
+            count--;
+            updateDisplay();
+        }
+
+        function reset() {
+            count = 0;
+            updateDisplay();
+        }
+
+        // Initialize display on load
+        document.addEventListener('DOMContentLoaded', updateDisplay);
+    </script>
+</body>
+</html>

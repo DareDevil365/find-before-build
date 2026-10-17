@@ -428,15 +428,17 @@ def run(args: argparse.Namespace) -> dict:
             if reply:
                 count(reply)
         except RuntimeError as exc:
-            discovery = {"status": "unavailable", "queries": queries, "error": str(exc)[:300]}
+            discovery = {"status": "unavailable", "quality": "unavailable", "queries": queries, "error": str(exc)[:300]}
             decision = {"action": "build_fresh", "repository": None, "reason": "Repository discovery was unavailable; this is not evidence that no reusable project exists.", "integration": "Build in workspace.", "unknowns": [str(exc)[:200]]}
-            progress("choosing", "GitHub discovery unavailable; proceeding with a labelled fallback", candidates=[], quality="unavailable")
+            progress("choosing", "GitHub discovery unavailable; proceeding with a labelled fallback", candidates=[], quality="unavailable", discovery_error="GitHub API rate limit exceeded" if "rate limit" in str(exc).lower() else str(exc)[:160])
     progress("deciding", "Reuse decision made before coding", candidates=discovery.get("candidates", []), quality=discovery.get("quality", "unknown"), decision=decision, selected=selected_names(decision))
     print("Decision before coding:", json.dumps(decision, ensure_ascii=False), flush=True)
     if discovery.get("candidates"):
         print("Evidence:", json.dumps(discovery["candidates"][:3], ensure_ascii=False), flush=True)
     if discovery.get("quality") == "metadata_only":
         print("Discovery warning: GitHub rate limiting prevented README/issue verification; rankings use metadata only.", flush=True)
+    elif discovery.get("quality") == "cached_unverified":
+        print("Discovery warning: Fresh GitHub search failed; using recent related cached evidence. Check repository details before reuse.", flush=True)
     references: dict = {}
     reuse_warnings: list[str] = []
     if decision["action"] != "build_fresh" and selected_names(decision):

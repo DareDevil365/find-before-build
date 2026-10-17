@@ -7,3 +7,7 @@ __pycache__/
 *.gguf
 demo-*/
 .aider*
+demo-gemini*.webm
+.playwright-cli/
+demo's outputs/**/record.json
+demo's outputs/failed-gemini-3.8-flash/

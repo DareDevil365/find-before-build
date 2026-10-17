@@ -9,6 +9,7 @@ from itertools import zip_longest
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from datetime import datetime, timezone, timedelta
 from urllib.error import HTTPError, URLError
@@ -18,6 +19,7 @@ from urllib.request import Request, urlopen
 API = "https://api.github.com"
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CACHE = ROOT / ".cache" / "github"
+SEARCH_FILLER = {"a", "an", "and", "app", "build", "code", "component", "for", "github", "in", "js", "javascript", "library", "project", "repo", "simple", "the", "tool", "user", "web", "with"}
 
 
 def now_iso() -> str:
@@ -46,6 +48,36 @@ def fetch_json(path: str, token: str | None, timeout: float = 12) -> dict | list
 def cache_key(queries: list[str], max_results: int) -> str:
     raw = json.dumps([queries, max_results, 1], sort_keys=True).encode()
     return hashlib.sha256(raw).hexdigest()[:20]
+
+
+def related_cached_result(cache_dir: Path, queries: list[str], max_results: int, failure: str) -> dict | None:
+    """Use one recent, strongly related cached search when a fresh search fails."""
+    wanted = {term for term in re.findall(r"[a-z0-9]+", " ".join(queries).lower()) if term not in SEARCH_FILLER and len(term) > 2}
+    if len(wanted) < 2:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    best: tuple[float, dict] | None = None
+    for path in cache_dir.glob("*.json"):
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            retrieved = datetime.fromisoformat(saved["retrieved_at"].replace("Z", "+00:00"))
+            cached_queries = saved["queries"]
+            candidates = saved["candidates"]
+            if retrieved < cutoff or not isinstance(cached_queries, list) or not isinstance(candidates, list) or not candidates:
+                continue
+            have = {term for term in re.findall(r"[a-z0-9]+", " ".join(cached_queries).lower()) if term not in SEARCH_FILLER and len(term) > 2}
+            overlap = wanted & have
+            if len(overlap) < 2 or len(overlap) / len(wanted) < 0.4:
+                continue
+            rank = len(overlap) / len(wanted) + len(overlap) / max(len(have), 1) + retrieved.timestamp() / 1e12
+            if best is None or rank > best[0]:
+                best = (rank, saved)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            continue
+    if best is None:
+        return None
+    saved = best[1]
+    return {**saved, "candidates": saved["candidates"][:max_results], "source": "related_cache", "quality": "cached_unverified", "requested_queries": queries, "cache_used_at": now_iso(), "warning": "Fresh GitHub search failed; using recent related cached evidence. New queries were not verified. " + failure[:180]}
 
 
 def fetch_readme(full_name: str, token: str | None) -> str:
@@ -161,6 +193,9 @@ def search(queries: list[str], max_results: int = 5, cache_dir: Path = DEFAULT_C
     except RuntimeError as exc:
         if cached is not None:
             return {**cached, "source": "cache", "cache_used_at": now_iso(), "warning": str(exc)}
+        related = related_cached_result(cache_dir, queries, max_results, str(exc))
+        if related is not None:
+            return related
         raise
 
 

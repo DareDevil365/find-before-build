@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -56,6 +57,19 @@ class ScoringTests(unittest.TestCase):
 
 
 class SearchTests(unittest.TestCase):
+    def test_rate_limit_uses_only_recent_related_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            cache = Path(temp)
+            saved = {"queries": ["javascript web calculator", "math expression parser javascript"], "retrieved_at": search_repos.now_iso(), "source": "live", "candidates": [{"full_name": "demo/expression-parser", "license": "MIT"}]}
+            (cache / "prior.json").write_text(json.dumps(saved), encoding="utf-8")
+            with patch.object(search_repos, "fetch_json", side_effect=RuntimeError("GitHub HTTP 403: rate limit exceeded")):
+                result = search_repos.search(["calculator interface javascript", "math expression parser"], 9, cache)
+                self.assertEqual(result["source"], "related_cache")
+                self.assertEqual(result["quality"], "cached_unverified")
+                self.assertEqual(result["candidates"][0]["full_name"], "demo/expression-parser")
+                with self.assertRaisesRegex(RuntimeError, "rate limit"):
+                    search_repos.search(["PDF merge", "bookmark writer"], 9, cache)
+
     def test_queries_both_contribute_and_offline_reuses_timestamped_cache(self):
         calls = []
 

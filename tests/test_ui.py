@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from ui import create_server  # noqa: E402
+from ui import JobManager, create_server  # noqa: E402
 
 
 FAKE_HARNESS = r'''import json
@@ -98,6 +98,10 @@ class UiTests(unittest.TestCase):
         self.assertIn("output.txt", state["files"])
         self.assertEqual(self.request("/api/file?id=" + job_id + "&path=output.txt")[1]["content"], "Requested: JSON")
         self.assertEqual(self.request("/api/file?id=" + job_id + "&path=..%2Fharness.py")[0], 400)
+        restored = JobManager(self.root).current()
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.id, job_id)
+        self.assertIn("output.txt", restored.snapshot()["files"])
 
     def test_served_browser_script_parses(self) -> None:
         if not shutil.which("node"):
