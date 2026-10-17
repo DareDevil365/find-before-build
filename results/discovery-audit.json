@@ -1,0 +1,58 @@
+{
+  "audit_date": "2026-10-17",
+  "method": "Manual audit of live GitHub repository-search metadata and current harness query/ranking behavior; README and issue enrichment was rate-limited, so listed repository capabilities are candidates to verify, not confirmed integrations.",
+  "cases": [
+    {
+      "task": "Create a CSV cleaner CLI that normalizes column names and removes duplicate rows",
+      "fallback_queries": ["csv cleaner normalizes", "csv cleaner python"],
+      "observed_candidates": [
+        "https://github.com/jeanPaques/csv_excel_cleaner",
+        "https://github.com/ShawnaRStaff/csv-cleaner"
+      ],
+      "assessment": "The direct product search found plausible cleaners. Compare actual column-normalization and duplicate-removal features before reuse. Querying a mature CSV library separately could improve component coverage."
+    },
+    {
+      "task": "Build a PDF merger with bookmarks",
+      "fallback_queries": ["pdf merger bookmarks", "pdf merger python"],
+      "observed_candidates": [
+        "https://github.com/qwinsi/jh-pdf-merger",
+        "https://github.com/MikeScarp/PDF-Merger",
+        "https://github.com/ifaz-alam/PDF-Merger"
+      ],
+      "assessment": "The exact query finds projects claiming both merge and bookmark support. A component query such as 'python pdf library' is needed to compare a reusable PDF dependency before adopting a small application repo."
+    },
+    {
+      "task": "Make a Markdown to slides converter",
+      "fallback_queries": ["markdown slides converter", "markdown slides python"],
+      "observed_candidates": [
+        "https://github.com/marp-team/marp-core",
+        "https://github.com/marp-team/marp-cli",
+        "https://github.com/2aronS/md-slides"
+      ],
+      "assessment": "The first query finds mature converter components. Verify output format, runtime, and license before selecting one."
+    },
+    {
+      "task": "Compare 1 kg parcel courier prices from Delhi to Mumbai with a scraper",
+      "previous_fallback_queries": ["india courier price scraper", "web scraper python", "shipping rate comparison"],
+      "observed_candidates": [
+        "https://github.com/alirezamika/autoscraper",
+        "https://github.com/jaebradley/basketball_reference_web_scraper",
+        "https://github.com/kavix/multi-carrier-shipping-golang"
+      ],
+      "observed_domain_search": {
+        "query": "shiprocket courier api",
+        "candidates": [
+          "https://github.com/madhusarvam/shiprocket-api",
+          "https://github.com/timslabs/shiprocket-go"
+        ]
+      },
+      "assessment": "The former whole-product query returned no repositories. A vendor-specific query finds possible courier API adapters; a generic scraper query finds extraction components but also unrelated sports/social scrapers. None of these results alone establishes public live courier prices."
+    }
+  ],
+  "issues_found": [
+    "The courier planner previously overwrote useful vendor-specific model queries with a whole-product query that had zero hits; fixed and covered by test_courier_model_plan_keeps_vendor_specific_component.",
+    "Popularity and activity previously let an unrelated basketball scraper outrank a direct courier component; a task-domain score cap now addresses this case and is covered by test_unrelated_high_popularity_does_not_beat_courier_component.",
+    "Unauthenticated GitHub README/issue calls returned HTTP 403 rate-limit errors. Search now reports metadata_only and stops enrichment after the first limit; downstream decisions must treat missing README/maintenance as unknown.",
+    "Component discovery remains query-sensitive: an exact product query may surface narrow projects while missing mature libraries. Results still need source inspection and task-specific acceptance tests."
+  ]
+}

@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import os
+import re
+import sys
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -25,14 +28,22 @@ class Reply:
 
 def post_json(url: str, body: dict, headers: dict, timeout: float = 120) -> dict:
     request = Request(url, data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json", **headers}, method="POST")
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            return json.load(response)
-    except HTTPError as exc:
-        detail = exc.read(500).decode("utf-8", "replace")
-        raise RuntimeError(f"Model API HTTP {exc.code}: {detail}") from exc
-    except (URLError, TimeoutError) as exc:
-        raise RuntimeError(f"Model API unavailable: {exc}") from exc
+    for attempt in range(3):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return json.load(response)
+        except HTTPError as exc:
+            detail = exc.read(500).decode("utf-8", "replace")
+            if exc.code in {429, 500, 502, 503} and attempt < 2:
+                match = re.search(r"retry in\s+([\d.]+)s", detail, re.I)
+                delay = min(40, max(2 ** attempt, float(match.group(1)) + 1 if match else 2 ** attempt))
+                print(f"Model API HTTP {exc.code}; retrying in {delay:.1f}s", file=sys.stderr, flush=True)
+                time.sleep(delay)
+                continue
+            raise RuntimeError(f"Model API HTTP {exc.code}: {detail}") from exc
+        except (URLError, TimeoutError) as exc:
+            raise RuntimeError(f"Model API unavailable: {exc}") from exc
+    raise RuntimeError("Model API retry limit reached")
 
 
 class KoboldCpp:
@@ -97,7 +108,7 @@ class GemmaAPI:
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None) -> Reply:
         system, contents = self.convert_messages(messages)
-        body: dict = {"contents": contents, "generationConfig": {"temperature": 0.2, "maxOutputTokens": 768}}
+        body: dict = {"contents": contents, "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096}}
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
         if tools:

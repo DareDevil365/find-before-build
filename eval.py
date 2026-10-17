@@ -84,7 +84,7 @@ def _write_count(record: dict) -> int:
 def run_arm(*, label: str, spec: dict, workspace: Path, output: Path, backend: str, engine: str, model: str | None, max_turns: int, timeout: int) -> dict:
     prepare_workspace(workspace, spec.get("seed_files", {}))
     record_path = output / f"{label}-record.json"
-    argv = [sys.executable, str(ROOT / "harness.py"), spec["task"], "--workspace", str(workspace), "--backend", backend, "--engine", engine, "--no-commands", "--record", str(record_path), "--max-turns", str(max_turns)]
+    argv = [sys.executable, str(ROOT / "harness.py"), spec["task"], "--workspace", str(workspace), "--backend", backend, "--engine", engine, "--no-commands", "--no-questions", "--record", str(record_path), "--max-turns", str(max_turns)]
     if model:
         argv.extend(["--model", model])
     if label == "baseline":

@@ -74,6 +74,7 @@ class SearchTests(unittest.TestCase):
             cache = Path(temp)
             live = search_repos.search(["first", "second"], 2, cache)
             self.assertEqual({candidate["full_name"] for candidate in live["candidates"]}, {"demo/first", "demo/second"})
+            self.assertEqual({candidate["full_name"]: candidate["matched_queries"] for candidate in live["candidates"]}, {"demo/first": ["first"], "demo/second": ["second"]})
             self.assertEqual(live["source"], "live")
             self.assertTrue(live["retrieved_at"])
             self.assertTrue(all(candidate["readme"] == "README" for candidate in live["candidates"]))

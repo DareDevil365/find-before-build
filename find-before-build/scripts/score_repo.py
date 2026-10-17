@@ -44,7 +44,7 @@ def score_one(repo: dict, task: str, at: datetime | None = None) -> dict:
         flags.append("stale, archived, or activity unknown")
 
     task_words = words(task)
-    readme_words = words((repo.get("description") or "") + " " + (repo.get("readme") or ""))
+    readme_words = words((repo.get("full_name") or "").replace("-", " ").replace("_", " ") + " " + (repo.get("description") or "") + " " + (repo.get("readme") or ""))
     matched = sorted(task_words & readme_words)
     overlap = len(matched) / len(task_words) if task_words else 0
     fit = round(20 * overlap)
@@ -71,7 +71,11 @@ def score_one(repo: dict, task: str, at: datetime | None = None) -> dict:
     star_points = min(15, round(15 * math.log10(stars + 1) / 4))
     signals["stars"] = {"points": star_points, "max": 15, "reason": f"{stars} stars; logarithmic scale"}
     total = sum(s["points"] for s in signals.values())
-    return {"full_name": repo.get("full_name"), "url": repo.get("url"), "score": total, "signals": signals, "flags": flags, "description": repo.get("description", "")}
+    domain_words = task_words - {"scraper", "scraping", "crawler", "python", "compare", "comparison", "converter", "generator", "website", "application"}
+    if domain_words and not domain_words.intersection(readme_words):
+        flags.append("no task-domain overlap; consider only as a generic component")
+        total = min(total, 50)
+    return {"full_name": repo.get("full_name"), "url": repo.get("url"), "score": total, "signals": signals, "flags": flags, "description": repo.get("description", ""), "size_kb": repo.get("size_kb"), "matched_queries": repo.get("matched_queries", [])}
 
 
 def score_all(data: dict, task: str) -> dict:

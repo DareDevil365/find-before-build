@@ -1,0 +1,96 @@
+"""Exercise the local UI protocol with a tiny stand-in harness subprocess."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import re
+import tempfile
+import threading
+import time
+import unittest
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ui import create_server  # noqa: E402
+
+
+FAKE_HARNESS = r'''import json
+from pathlib import Path
+import sys
+workspace = Path(sys.argv[sys.argv.index("--workspace") + 1])
+record = Path(sys.argv[sys.argv.index("--record") + 1])
+print('@@QUESTION:{"question":"Which format?"}', flush=True)
+answer = input().strip()
+(workspace / "output.txt").write_text("Requested: " + answer, encoding="utf-8")
+record.write_text(json.dumps({"status":"finished","written_files":["output.txt"]}), encoding="utf-8")
+print("Built output.txt", flush=True)
+'''
+
+
+class UiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / "harness.py").write_text(FAKE_HARNESS, encoding="utf-8")
+        self.server = create_server(self.root, port=0)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        page = urlopen(self.base + "/").read().decode("utf-8")
+        self.token = re.search(r"const token='([^']+)'", page).group(1)
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.temp.cleanup()
+
+    def request(self, path: str, data: dict | None = None, token: str | None = None) -> tuple[int, dict]:
+        body = json.dumps(data).encode("utf-8") if data is not None else None
+        headers = {"X-UI-Token": self.token if token is None else token}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        request = Request(self.base + path, data=body, headers=headers)
+        try:
+            with urlopen(request) as response:
+                return response.status, json.load(response)
+        except HTTPError as exc:
+            with exc:
+                return exc.code, json.load(exc)
+
+    def test_clarify_build_and_preview(self) -> None:
+        status, started = self.request("/api/start", {"task": "Create a simple thing", "backend": "koboldcpp"})
+        self.assertEqual(status, 200)
+        job_id = started["id"]
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            _, state = self.request("/api/state?id=" + job_id)
+            if state["pending_question"]:
+                break
+            time.sleep(0.05)
+        self.assertEqual(state["pending_question"], "Which format?")
+        self.assertEqual(self.request("/api/answer", {"id": job_id, "answer": "JSON"})[0], 200)
+        while time.monotonic() < deadline:
+            _, state = self.request("/api/state?id=" + job_id)
+            if not state["running"]:
+                break
+            time.sleep(0.05)
+        self.assertFalse(state["running"])
+        self.assertEqual(state["result"]["status"], "finished")
+        self.assertIn("output.txt", state["files"])
+        self.assertEqual(self.request("/api/file?id=" + job_id + "&path=output.txt")[1]["content"], "Requested: JSON")
+        self.assertEqual(self.request("/api/file?id=" + job_id + "&path=..%2Fharness.py")[0], 400)
+
+    def test_rejects_unauthorized_and_invalid_requests(self) -> None:
+        self.assertEqual(self.request("/api/state?id=missing", token="wrong")[0], 403)
+        self.assertEqual(self.request("/api/start", {"task": "x", "backend": "koboldcpp"})[0], 400)
+        self.assertEqual(self.request("/api/start", {"task": "Build something", "backend": "unknown"})[0], 400)
+        self.assertEqual(self.request("/api/answer", {"id": "missing", "answer": "Yes"})[0], 400)
+
+
+if __name__ == "__main__":
+    unittest.main()

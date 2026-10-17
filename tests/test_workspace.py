@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from harness_core.workspace import Workspace
+from harness_core.workspace import Workspace, _NoRedirect
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -35,6 +35,14 @@ class WorkspaceTests(unittest.TestCase):
             workspace = Workspace(root, confirm_commands=False)
             self.assertIn("ERROR", workspace.call("write_file", {"path": "escape/file.txt", "content": "bad"}))
             self.assertFalse((Path(outside) / "file.txt").exists())
+
+    def test_page_inspection_accepts_only_exact_https_task_urls(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Workspace(Path(temp), allowed_urls={"https://example.com/rates"})
+            self.assertIn("ERROR", workspace.call("inspect_url", {"url": "https://example.com/other"}))
+            workspace.allowed_urls.add("http://example.com/rates")
+            self.assertIn("ERROR", workspace.call("inspect_url", {"url": "http://example.com/rates"}))
+            self.assertIsNone(_NoRedirect().redirect_request(None, None, 302, "Moved", {}, "https://elsewhere.example/"))
 
 
 if __name__ == "__main__":

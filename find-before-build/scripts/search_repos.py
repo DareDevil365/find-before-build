@@ -119,10 +119,12 @@ def search(queries: list[str], max_results: int = 5, cache_dir: Path = DEFAULT_C
             if len(found) >= max_results:
                 break
         candidates = []
+        enrichment_limited = False
         for item in list(found.values())[:max_results]:
             name = item["full_name"]
             record = {
                 "full_name": name,
+                "matched_queries": [query for query, matches in zip(queries, per_query) if any(match.get("full_name") == name for match in matches)],
                 "url": item.get("html_url", f"https://github.com/{name}"),
                 "description": item.get("description") or "",
                 "stars": item.get("stargazers_count", 0),
@@ -130,21 +132,30 @@ def search(queries: list[str], max_results: int = 5, cache_dir: Path = DEFAULT_C
                 "pushed_at": item.get("pushed_at"),
                 "license": (item.get("license") or {}).get("spdx_id"),
                 "archived": bool(item.get("archived")),
+                "size_kb": item.get("size"),
                 "readme": "",
                 "recent_closed_issues": None,
                 "sampled_issues": None,
                 "warnings": [],
             }
-            try:
-                record["readme"] = fetch_readme(name, token)
-            except RuntimeError as exc:
-                record["warnings"].append(f"README unavailable: {exc}")
-            try:
-                record.update(fetch_issue_health(name, token))
-            except RuntimeError as exc:
-                record["warnings"].append(f"Issue sample unavailable: {exc}")
+            if enrichment_limited:
+                record["warnings"].append("README and issue checks skipped after GitHub API rate limit")
+            else:
+                try:
+                    record["readme"] = fetch_readme(name, token)
+                except RuntimeError as exc:
+                    record["warnings"].append(f"README unavailable: {exc}")
+                    if "HTTP 403" in str(exc) or "rate limit" in str(exc).lower():
+                        enrichment_limited = True
+                if not enrichment_limited:
+                    try:
+                        record.update(fetch_issue_health(name, token))
+                    except RuntimeError as exc:
+                        record["warnings"].append(f"Issue sample unavailable: {exc}")
+                        if "HTTP 403" in str(exc) or "rate limit" in str(exc).lower():
+                            enrichment_limited = True
             candidates.append(record)
-        result = {"queries": queries, "retrieved_at": now_iso(), "source": "live", "candidates": candidates}
+        result = {"queries": queries, "retrieved_at": now_iso(), "source": "live", "quality": "metadata_only" if enrichment_limited else "enriched", "candidates": candidates}
         cache_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
         return result
     except RuntimeError as exc:
