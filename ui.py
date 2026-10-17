@@ -161,7 +161,7 @@ class JobManager:
                 raise ValueError("Unknown build") from exc
 
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Find Before Build</title><style>
 :root{color-scheme:dark;font:16px/1.45 system-ui,sans-serif;background:#111827;color:#f9fafb}
@@ -176,7 +176,7 @@ ul{padding-left:22px}li{margin:4px 0}a{color:#93c5fd}.hidden{display:none}
 #status{font-weight:700}#questionText{color:#fff}
 </style></head><body>
 <h1>Find Before Build</h1><p>Describe what you want. The harness clarifies the request, searches GitHub for reusable work, then asks Gemma or your local model to build it.</p>
-<section><label for="task">Your request</label><textarea id="task" placeholder="Build a parcel courier price comparison tool for India…"></textarea>
+<section><label for="task">Your request</label><textarea id="task" placeholder="Build a parcel courier price comparison tool for India..."></textarea>
 <div class="row"><label for="backend">Model</label><select id="backend"><option value="koboldcpp">Local model (KoboldCpp)</option><option value="gemma-api">Gemma 4 API</option></select><button id="start">Find and build</button></div></section>
 <section id="question" class="hidden"><h2>Clarification</h2><p id="questionText"></p><div class="row"><input id="answer" placeholder="Your answer"><button id="sendAnswer">Continue</button></div></section>
 <section><h2>Progress</h2><div id="status">Ready</div><pre id="logs">Your build log will appear here.</pre></section>
@@ -185,9 +185,9 @@ ul{padding-left:22px}li{margin:4px 0}a{color:#93c5fd}.hidden{display:none}
 const token='__TOKEN__';let job=null;let busy=false;let lastQuestion=null;
 const $=id=>document.getElementById(id);
 async function api(path,options={}){let r=await fetch(path,{...options,headers:{'Content-Type':'application/json','X-UI-Token':token,...options.headers}});let j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');return j}
-async function start(){if(busy)return;try{let j=await api('/api/start',{method:'POST',body:JSON.stringify({task:$('task').value,backend:$('backend').value})});job=j.id;busy=true;$('start').disabled=true;$('status').textContent='Starting…';$('logs').textContent='';$('files').replaceChildren();poll()}catch(e){$('status').textContent=e.message}}
+async function start(){if(busy)return;try{let j=await api('/api/start',{method:'POST',body:JSON.stringify({task:$('task').value,backend:$('backend').value})});job=j.id;busy=true;$('start').disabled=true;$('status').textContent='Starting...';$('logs').textContent='';$('files').replaceChildren();poll()}catch(e){$('status').textContent=e.message}}
 async function sendAnswer(){try{await api('/api/answer',{method:'POST',body:JSON.stringify({id:job,answer:$('answer').value})});$('answer').value='';$('question').classList.add('hidden');lastQuestion=null}catch(e){$('status').textContent=e.message}}
-async function poll(){if(!job)return;try{let s=await api('/api/state?id='+encodeURIComponent(job));let label=s.running?'Running':(s.result?.status|| (s.error?'Error':'Exited '+s.exit_code));$('status').textContent=label+(s.error?' — '+s.error:'');$('logs').textContent=s.lines.join('\n');$('logs').scrollTop=$('logs').scrollHeight;
+async function poll(){if(!job)return;try{let s=await api('/api/state?id='+encodeURIComponent(job));let label=s.running?'Running':(s.result?.status|| (s.error?'Error':'Exited '+s.exit_code));$('status').textContent=label+(s.error?' - '+s.error:'');$('logs').textContent=s.lines.join('\n');$('logs').scrollTop=$('logs').scrollHeight;
 if(s.pending_question){$('question').classList.remove('hidden');$('questionText').textContent=s.pending_question;if(lastQuestion!==s.pending_question){$('answer').focus();lastQuestion=s.pending_question}}else{$('question').classList.add('hidden');lastQuestion=null}
 let list=$('files');list.replaceChildren();for(let name of s.files){let li=document.createElement('li'),a=document.createElement('a');a.href='#';a.textContent=name;a.onclick=async e=>{e.preventDefault();try{let f=await api('/api/file?id='+encodeURIComponent(job)+'&path='+encodeURIComponent(name));$('preview').textContent=f.content}catch(err){$('preview').textContent=err.message}};li.append(a);list.append(li)}
 if(!s.running){busy=false;$('start').disabled=false}}catch(e){$('status').textContent=e.message}if(busy)setTimeout(poll,1000)}

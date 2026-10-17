@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -84,6 +86,16 @@ class UiTests(unittest.TestCase):
         self.assertIn("output.txt", state["files"])
         self.assertEqual(self.request("/api/file?id=" + job_id + "&path=output.txt")[1]["content"], "Requested: JSON")
         self.assertEqual(self.request("/api/file?id=" + job_id + "&path=..%2Fharness.py")[0], 400)
+
+    def test_served_browser_script_parses(self) -> None:
+        if not shutil.which("node"):
+            self.skipTest("Node.js is unavailable")
+        page = urlopen(self.base + "/").read().decode("utf-8")
+        script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+        script_file = self.root / "served-ui.js"
+        script_file.write_text(script, encoding="utf-8")
+        result = subprocess.run(["node", "--check", str(script_file)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_rejects_unauthorized_and_invalid_requests(self) -> None:
         self.assertEqual(self.request("/api/state?id=missing", token="wrong")[0], 403)
