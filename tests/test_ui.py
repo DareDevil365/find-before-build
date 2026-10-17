@@ -25,10 +25,16 @@ from pathlib import Path
 import sys
 workspace = Path(sys.argv[sys.argv.index("--workspace") + 1])
 record = Path(sys.argv[sys.argv.index("--record") + 1])
+print('@@EVENT:{"stage":"clarifying","detail":"Checking the request"}', flush=True)
 print('@@QUESTION:{"question":"Which format?"}', flush=True)
 answer = input().strip()
+candidate = {"name":"example/reusable","url":"https://github.com/example/reusable","score":72,"license":"MIT","flags":[]}
+decision = {"action":"dependency","repositories":["example/reusable"],"reason":"Useful component"}
+print('@@EVENT:' + json.dumps({"stage":"choosing","detail":"Comparing candidates","candidates":[candidate],"quality":"live"}), flush=True)
+print('@@EVENT:' + json.dumps({"stage":"deciding","detail":"Reuse decision made","decision":decision,"selected":["example/reusable"]}), flush=True)
+print('@@EVENT:' + json.dumps({"stage":"coding","detail":"Writing output.txt","used":["example/reusable"]}), flush=True)
 (workspace / "output.txt").write_text("Requested: " + answer, encoding="utf-8")
-record.write_text(json.dumps({"status":"finished","written_files":["output.txt"]}), encoding="utf-8")
+record.write_text(json.dumps({"status":"finished","written_files":["output.txt"],"discovery":{"candidates":[candidate],"quality":"live"},"decision":decision,"reuse":{"repositories":{"example/reusable":{}}}}), encoding="utf-8")
 print("Built output.txt", flush=True)
 '''
 
@@ -68,6 +74,7 @@ class UiTests(unittest.TestCase):
         status, started = self.request("/api/start", {"task": "Create a simple thing", "backend": "koboldcpp"})
         self.assertEqual(status, 200)
         job_id = started["id"]
+        self.assertEqual(self.request("/api/current")[1]["id"], job_id)
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             _, state = self.request("/api/state?id=" + job_id)
@@ -83,6 +90,11 @@ class UiTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertFalse(state["running"])
         self.assertEqual(state["result"]["status"], "finished")
+        self.assertEqual(state["stage"], "complete")
+        self.assertEqual(state["candidates"][0]["name"], "example/reusable")
+        self.assertEqual(state["selected"], ["example/reusable"])
+        self.assertEqual(state["used"], ["example/reusable"])
+        self.assertEqual(state["decision"]["reason"], "Useful component")
         self.assertIn("output.txt", state["files"])
         self.assertEqual(self.request("/api/file?id=" + job_id + "&path=output.txt")[1]["content"], "Requested: JSON")
         self.assertEqual(self.request("/api/file?id=" + job_id + "&path=..%2Fharness.py")[0], 400)

@@ -24,6 +24,12 @@ MAX_BODY = 20_000
 MAX_PREVIEW = 200_000
 
 
+class LocalServer(ThreadingHTTPServer):
+    # Windows can otherwise let two UI processes listen on the same port and
+    # send requests to whichever copy happens to accept them.
+    allow_reuse_address = False
+
+
 @dataclass
 class Job:
     id: str
@@ -37,6 +43,14 @@ class Job:
     result: dict | None = None
     exit_code: int | None = None
     error: str | None = None
+    stage: str = "starting"
+    detail: str = "Starting the harness"
+    candidates: list[dict] = field(default_factory=list)
+    decision: dict | None = None
+    selected: list[str] = field(default_factory=list)
+    used: list[str] = field(default_factory=list)
+    queries: list[str] = field(default_factory=list)
+    quality: str = "unknown"
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> dict:
@@ -48,6 +62,14 @@ class Job:
                 "running": self.exit_code is None and self.error is None,
                 "exit_code": self.exit_code,
                 "error": self.error,
+                "stage": self.stage,
+                "detail": self.detail,
+                "candidates": self.candidates,
+                "decision": self.decision,
+                "selected": self.selected,
+                "used": self.used,
+                "queries": self.queries,
+                "quality": self.quality,
                 "pending_question": self.pending_question,
                 "lines": self.lines[-400:],
                 "result": self.result,
@@ -86,8 +108,8 @@ class JobManager:
         task = task.strip()
         if not 3 <= len(task) <= 6000:
             raise ValueError("Enter a request between 3 and 6,000 characters")
-        if backend not in {"koboldcpp", "gemma-api"}:
-            raise ValueError("Choose KoboldCpp or Gemma API")
+        if backend not in {"koboldcpp", "gemma-api", "gemini-api"}:
+            raise ValueError("Choose KoboldCpp, Gemma, or Gemini")
         with self.lock:
             if any(job.snapshot()["running"] for job in self.jobs.values()):
                 raise ValueError("A build is already running. Finish it before starting another.")
@@ -100,12 +122,14 @@ class JobManager:
 
         command = [
             sys.executable, "-u", str(self.root / "harness.py"), task,
-            "--workspace", str(workspace), "--backend", backend,
+            "--workspace", str(workspace), "--backend", "gemma-api" if backend == "gemini-api" else backend,
             "--engine", "native", "--clarify", "--question-channel", "json",
             "--no-commands", "--record", str(job.record),
         ]
         if backend == "gemma-api":
             command += ["--model", "gemma-4-26b-a4b-it"]
+        elif backend == "gemini-api":
+            command += ["--model", "gemini-2.5-flash"]
         try:
             job.process = subprocess.Popen(
                 command, cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -124,7 +148,17 @@ class JobManager:
         try:
             for line in job.process.stdout:
                 line = line.rstrip("\r\n")
-                if line.startswith("@@QUESTION:"):
+                if line.startswith("@@EVENT:"):
+                    try:
+                        event = json.loads(line[len("@@EVENT:"):])
+                        if isinstance(event, dict):
+                            with job.lock:
+                                for key in ("stage", "detail", "candidates", "decision", "selected", "used", "queries", "quality"):
+                                    if key in event:
+                                        setattr(job, key, event[key])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                elif line.startswith("@@QUESTION:"):
                     try:
                         question = json.loads(line[len("@@QUESTION:"):])["question"]
                     except (json.JSONDecodeError, KeyError, TypeError):
@@ -148,6 +182,14 @@ class JobManager:
                 job.result = result
                 job.exit_code = exit_code
                 job.pending_question = None
+                if result:
+                    job.stage = "complete"
+                    job.detail = "Build ended: " + str(result.get("status", "unknown"))
+                    discovery = result.get("discovery") or {}
+                    job.candidates = discovery.get("candidates", job.candidates)
+                    job.quality = discovery.get("quality", job.quality)
+                    job.decision = result.get("decision", job.decision)
+                    job.used = list((result.get("reuse") or {}).get("repositories") or {})
         except Exception as exc:  # keep the browser informed if the reader fails
             with job.lock:
                 job.error = str(exc)
@@ -160,12 +202,16 @@ class JobManager:
             except KeyError as exc:
                 raise ValueError("Unknown build") from exc
 
+    def current(self) -> Job | None:
+        with self.lock:
+            return next(reversed(self.jobs.values()), None) if self.jobs else None
+
 
 PAGE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Find Before Build</title><style>
 :root{color-scheme:dark;font:16px/1.45 system-ui,sans-serif;background:#111827;color:#f9fafb}
-body{max-width:1000px;margin:0 auto;padding:28px 18px}h1{margin-bottom:5px}p{color:#bac4d2}
+body{max-width:1250px;margin:0 auto;padding:28px 18px}h1{margin-bottom:5px}p{color:#bac4d2}
 section{background:#1f2937;border:1px solid #374151;border-radius:12px;padding:18px;margin:16px 0}
 textarea,input,select,button{box-sizing:border-box;font:inherit;border-radius:7px;padding:10px;border:1px solid #4b5563}
 textarea,input,select{color:#fff;background:#111827}textarea{width:100%;min-height:120px;resize:vertical}
@@ -174,24 +220,40 @@ button{background:#4f46e5;color:white;border:0;cursor:pointer}button:disabled{op
 pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1220;padding:15px;border-radius:8px;max-height:390px;overflow:auto}
 ul{padding-left:22px}li{margin:4px 0}a{color:#93c5fd}.hidden{display:none}
 #status{font-weight:700}#questionText{color:#fff}
+.dashboard{display:grid;grid-template-columns:minmax(0,1fr) minmax(330px,.9fr);gap:16px;align-items:start}.dashboard section{margin:0}
+@media(max-width:780px){.dashboard{grid-template-columns:1fr}}
+#stage{font-size:1.2rem;font-weight:700;margin:12px 0 4px}#detail,#repoNote{color:#cbd5e1}
+.steps{display:flex;flex-wrap:wrap;gap:7px;padding:0;list-style:none}.steps li{border:1px solid #475569;border-radius:20px;padding:5px 10px;color:#aebacc}.steps li.active{background:#4338ca;color:white;border-color:#6366f1}.steps li.done{color:#a7f3d0;border-color:#047857}
+.repo{border:1px solid #475569;border-radius:9px;padding:10px;margin:10px 0;background:#111827}.repo.chosen{border:2px solid #34d399;background:#073b33}.repo a{font-weight:650}.repo small{display:block;color:#cbd5e1;margin-top:3px}.badge{display:inline-block;border-radius:15px;padding:2px 8px;background:#065f46;color:#d1fae5;font-size:.8rem;margin-left:6px}
+.repo p{margin:5px 0 0;font-size:.85rem}#decisionReason{margin:8px 0}#logs{font-size:.8rem}
 </style></head><body>
-<h1>Find Before Build</h1><p>Describe what you want. The harness clarifies the request, searches GitHub for reusable work, then asks Gemma or your local model to build it.</p>
+<h1>Find Before Build</h1><p>Describe what you want. The harness clarifies the request, searches GitHub for reusable work, then asks your selected model to build it.</p>
 <section><label for="task">Your request</label><textarea id="task" placeholder="Build a parcel courier price comparison tool for India..."></textarea>
-<div class="row"><label for="backend">Model</label><select id="backend"><option value="koboldcpp">Local model (KoboldCpp)</option><option value="gemma-api">Gemma 4 API</option></select><button id="start">Find and build</button></div></section>
+<div class="row"><label for="backend">Model</label><select id="backend"><option value="koboldcpp">Local model (KoboldCpp)</option><option value="gemma-api">Gemma 4 API</option><option value="gemini-api">Gemini Flash API</option></select><button id="start">Find and build</button></div></section>
 <section id="question" class="hidden"><h2>Clarification</h2><p id="questionText"></p><div class="row"><input id="answer" placeholder="Your answer"><button id="sendAnswer">Continue</button></div></section>
-<section><h2>Progress</h2><div id="status">Ready</div><pre id="logs">Your build log will appear here.</pre></section>
+<div class="dashboard"><section><h2>What the harness is doing</h2><div id="status">Ready</div><ol class="steps" id="steps"><li>Clarify</li><li>Search</li><li>Choose</li><li>Build</li><li>Finish</li></ol><div id="stage">Ready for a request</div><p id="detail">Start a build to see each stage.</p><details><summary>Detailed activity log</summary><pre id="logs">Your build log will appear here.</pre></details></section>
+<section><h2>GitHub repositories</h2><p id="repoNote">Search results will appear here. A green outline marks a repository chosen for reuse.</p><div id="decisionReason"></div><div id="repos"></div></section></div>
 <section><h2>Output files</h2><ul id="files"><li>Start a build to see files.</li></ul><h3>File preview</h3><pre id="preview">Select a file.</pre></section>
 <script>
 const token='__TOKEN__';let job=null;let busy=false;let lastQuestion=null;
 const $=id=>document.getElementById(id);
 async function api(path,options={}){let r=await fetch(path,{...options,headers:{'Content-Type':'application/json','X-UI-Token':token,...options.headers}});let j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');return j}
+const stages=['clarifying','searching','deciding','coding','complete'];
+function showProgress(s){let index=stages.indexOf(s.stage);if(s.stage==='choosing')index=2;if(s.stage==='starting')index=-1;for(let [n,li] of [...$('steps').children].entries()){li.className=n<index?'done':n===index?'active':''}let names={starting:'Starting',clarifying:'Clarifying the request',searching:'Searching GitHub',choosing:'Comparing repositories',deciding:'Making a reuse decision',coding:'Building the project',complete:'Run finished'};$('stage').textContent=names[s.stage]||'Working';$('detail').textContent=s.detail||''}
+function showRepos(s){let repos=$('repos');repos.replaceChildren();let selected=new Set(s.selected||[]),used=new Set(s.used||[]),decision=s.decision;
+let note=s.quality==='metadata_only'?'GitHub limited README or issue checks; these rankings use metadata only.':s.quality==='unavailable'?'GitHub discovery was unavailable.':'A green outline marks a repository chosen for reuse.';$('repoNote').textContent=note;
+$('decisionReason').textContent=decision?(decision.action==='build_fresh'?'Decision: build fresh. No repository was chosen. ':'Decision: '+decision.action+'. ')+(decision.reason||''):'';
+for(let item of s.candidates||[]){let card=document.createElement('div');card.className='repo'+(selected.has(item.name)?' chosen':'');let title=document.createElement('a');if(/^https:\/\/github\.com\//.test(item.url||'')){title.href=item.url;title.target='_blank';title.rel='noopener noreferrer'}title.textContent=item.name;card.append(title);if(selected.has(item.name)){let badge=document.createElement('span');badge.className='badge';badge.textContent=used.has(item.name)?'Source loaded':'Chosen for reuse';card.append(badge)}let meta=document.createElement('small');meta.textContent='Score '+item.score+' · License '+item.license;card.append(meta);if(item.flags?.length){let flags=document.createElement('p');flags.textContent=item.flags.join(' · ');card.append(flags)}repos.append(card)}
+if(!s.candidates?.length){let empty=document.createElement('p');empty.textContent=s.running?'Waiting for GitHub results...':'No repository results recorded.';repos.append(empty)}}
 async function start(){if(busy)return;try{let j=await api('/api/start',{method:'POST',body:JSON.stringify({task:$('task').value,backend:$('backend').value})});job=j.id;busy=true;$('start').disabled=true;$('status').textContent='Starting...';$('logs').textContent='';$('files').replaceChildren();poll()}catch(e){$('status').textContent=e.message}}
 async function sendAnswer(){try{await api('/api/answer',{method:'POST',body:JSON.stringify({id:job,answer:$('answer').value})});$('answer').value='';$('question').classList.add('hidden');lastQuestion=null}catch(e){$('status').textContent=e.message}}
 async function poll(){if(!job)return;try{let s=await api('/api/state?id='+encodeURIComponent(job));let label=s.running?'Running':(s.result?.status|| (s.error?'Error':'Exited '+s.exit_code));$('status').textContent=label+(s.error?' - '+s.error:'');$('logs').textContent=s.lines.join('\n');$('logs').scrollTop=$('logs').scrollHeight;
+showProgress(s);showRepos(s);
 if(s.pending_question){$('question').classList.remove('hidden');$('questionText').textContent=s.pending_question;if(lastQuestion!==s.pending_question){$('answer').focus();lastQuestion=s.pending_question}}else{$('question').classList.add('hidden');lastQuestion=null}
 let list=$('files');list.replaceChildren();for(let name of s.files){let li=document.createElement('li'),a=document.createElement('a');a.href='#';a.textContent=name;a.onclick=async e=>{e.preventDefault();try{let f=await api('/api/file?id='+encodeURIComponent(job)+'&path='+encodeURIComponent(name));$('preview').textContent=f.content}catch(err){$('preview').textContent=err.message}};li.append(a);list.append(li)}
 if(!s.running){busy=false;$('start').disabled=false}}catch(e){$('status').textContent=e.message}if(busy)setTimeout(poll,1000)}
 $('start').onclick=start;$('sendAnswer').onclick=sendAnswer;$('answer').onkeydown=e=>{if(e.key==='Enter')sendAnswer()};
+api('/api/current').then(current=>{if(current.id){job=current.id;busy=true;$('start').disabled=true;poll()}}).catch(()=>{});
 </script></body></html>"""
 
 
@@ -229,6 +291,10 @@ def create_server(root: Path = ROOT, host: str = "127.0.0.1", port: int = 8765) 
                 return
             if not self._authorized():
                 self._send(403, {"error": "Open this UI from its localhost page"})
+                return
+            if path.path == "/api/current":
+                current = manager.current()
+                self._send(200, {"id": current.id if current else None})
                 return
             args = parse_qs(path.query)
             try:
@@ -279,7 +345,7 @@ def create_server(root: Path = ROOT, host: str = "127.0.0.1", port: int = 8765) 
         def log_message(self, fmt: str, *args: object) -> None:
             pass
 
-    return ThreadingHTTPServer((host, port), Handler)
+    return LocalServer((host, port), Handler)
 
 
 def main() -> None:

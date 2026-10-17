@@ -358,6 +358,10 @@ def run(args: argparse.Namespace) -> dict:
     original_task = args.task
     guide = (ROOT / "CLARIFICATION_GUIDE.md").read_text(encoding="utf-8")
 
+    def progress(stage: str, detail: str = "", **data: object) -> None:
+        if args.question_channel == "json":
+            print("@@EVENT:" + json.dumps({"stage": stage, "detail": detail, **data}, ensure_ascii=False), flush=True)
+
     def ask_question(question: str) -> str:
         if args.no_questions:
             return "No answer available in this run"
@@ -392,6 +396,7 @@ def run(args: argparse.Namespace) -> dict:
 
     clarifications: list[dict] = []
     if args.clarify and not args.no_questions:
+        progress("clarifying", "Checking whether the request needs clarification")
         questions, clarification_reply = questions_for(backend, args.task, guide)
         if clarification_reply:
             count(clarification_reply)
@@ -411,18 +416,22 @@ def run(args: argparse.Namespace) -> dict:
         if plan_reply:
             count(plan_reply)
         queries = search_plan["queries"]
+        progress("searching", "Searching GitHub for reusable projects and components", queries=queries)
         print(f"Searching GitHub: {queries}", flush=True)
         try:
             evidence = search(queries, max_results=9, offline=args.offline)
             scored = score_all(evidence, args.task)
             scored_ranked = scored["ranked"]
             discovery = {"status": evidence["source"], "quality": evidence.get("quality", "unknown"), "search_plan": search_plan, "queries": queries, "retrieved_at": evidence["retrieved_at"], "candidates": [{"name": x["full_name"], "url": x["url"], "score": x["score"], "license": x["signals"]["license"]["reason"], "flags": x["flags"]} for x in scored["ranked"]], "warning": evidence.get("warning")}
+            progress("choosing", "Comparing repository fit, license, and integration cost", candidates=discovery["candidates"], quality=discovery["quality"])
             decision, reply = choose_decision(backend, args.task, scored, skill_instructions)
             if reply:
                 count(reply)
         except RuntimeError as exc:
             discovery = {"status": "unavailable", "queries": queries, "error": str(exc)[:300]}
             decision = {"action": "build_fresh", "repository": None, "reason": "Repository discovery was unavailable; this is not evidence that no reusable project exists.", "integration": "Build in workspace.", "unknowns": [str(exc)[:200]]}
+            progress("choosing", "GitHub discovery unavailable; proceeding with a labelled fallback", candidates=[], quality="unavailable")
+    progress("deciding", "Reuse decision made before coding", candidates=discovery.get("candidates", []), quality=discovery.get("quality", "unknown"), decision=decision, selected=selected_names(decision))
     print("Decision before coding:", json.dumps(decision, ensure_ascii=False), flush=True)
     if discovery.get("candidates"):
         print("Evidence:", json.dumps(discovery["candidates"][:3], ensure_ascii=False), flush=True)
@@ -443,6 +452,7 @@ def run(args: argparse.Namespace) -> dict:
         print("Pulled source repositories:", json.dumps({name: {"license": ref["license"], "commit": ref["commit"][:12]} for name, ref in references.items()}), flush=True)
     for warning in reuse_warnings:
         print("Reuse warning:", warning, flush=True)
+    progress("coding", "Writing and checking project files", used=list(references), selected=selected_names(decision))
     files = planned_files(args.task, workspace) if args.engine == "aider" else []
     before = snapshot(workspace.root)
 
@@ -478,6 +488,7 @@ def run(args: argparse.Namespace) -> dict:
     else:
         empty_replies = 0
         for turn in range(args.max_turns):
+            progress("coding", f"Model coding turn {turn + 1} of {args.max_turns}")
             try:
                 available_tools = [tool for tool in TOOL_SCHEMAS if (not args.no_questions or tool["function"]["name"] != "ask_user") and (not args.no_commands or tool["function"]["name"] != "run_command")]
                 reply = backend.chat(messages, available_tools + (REFERENCE_TOOL_SCHEMAS if references else []) + ([WEB_TOOL_SCHEMA] if allowed_urls else []))
@@ -509,6 +520,7 @@ def run(args: argparse.Namespace) -> dict:
             messages.append({"role": "assistant", "content": reply.text, "tool_calls": [{"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments)}} for call in reply.tool_calls], "gemini_parts": reply.raw_parts})
             for call in reply.tool_calls:
                 result = workspace.call(call.name, call.arguments)
+                progress("coding", f"{call.name}: {result[:120]}")
                 if call.name == "write_file" and result.startswith("Wrote") and first_write_at is None:
                     first_write_at = round(time.monotonic() - start, 2)
                 print(f"  {call.name}: {result[:300]}", flush=True)
@@ -535,6 +547,7 @@ def run(args: argparse.Namespace) -> dict:
     if args.record:
         args.record.parent.mkdir(parents=True, exist_ok=True)
         args.record.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    progress("complete", f"Build ended: {status}")
     return record
 
 
