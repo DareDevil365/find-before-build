@@ -41,6 +41,20 @@ class GemmaTests(unittest.TestCase):
         self.assertNotIn("test-secret", send.call_args.args[0])
         self.assertEqual(send.call_args.args[2]["x-goog-api-key"], "test-secret")
 
+    def test_gemini_function_call_keeps_thought_signature_in_history(self):
+        signed = {"functionCall": {"name": "list_files", "args": {}}, "thoughtSignature": "opaque-signature"}
+        wire = {"candidates": [{"content": {"parts": [signed]}}]}
+        with patch("harness_core.backends.post_json", return_value=wire):
+            reply = GemmaAPI(api_key="test-secret").chat([{"role": "user", "content": "list"}])
+        messages = [
+            {"role": "user", "content": "list"},
+            {"role": "assistant", "content": reply.text, "gemini_parts": reply.raw_parts},
+            {"role": "tool", "name": "list_files", "content": "[]"},
+        ]
+        _, contents = GemmaAPI.convert_messages(messages)
+        self.assertEqual(contents[1]["parts"][0]["thoughtSignature"], "opaque-signature")
+        self.assertEqual(contents[2]["parts"][0]["functionResponse"]["name"], "list_files")
+
 
 if __name__ == "__main__":
     unittest.main()

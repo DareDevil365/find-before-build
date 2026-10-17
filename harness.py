@@ -100,6 +100,7 @@ def plan_search(backend, task: str) -> tuple[dict, Reply | None]:
         "Return JSON only with capabilities (2-4 short strings) and queries (2-3 short GitHub repository search strings). "
         "The first query should target the whole requested product or closest domain implementation. "
         "The remaining queries should target independently reusable capabilities or libraries needed to build it. "
+        "Prioritize difficult or domain-specific components; do not spend a query on routine CLI, UI, or server scaffolding unless it is central to the request. "
         "Prefer common repository terms over incidental example values. "
         "Do not claim a repository exists or invent repository details. Keep each query at most five words."
     )
@@ -505,7 +506,7 @@ def run(args: argparse.Namespace) -> dict:
                 final_text = reply.text
                 status = "finished" if implementation_written(workspace.log, args.task) and not issues else "partial_edit" if any(entry.get("tool") == "write_file" and entry.get("status") == "ok" for entry in workspace.log) else "no_files_written"
                 break
-            messages.append({"role": "assistant", "content": reply.text, "tool_calls": [{"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments)}} for call in reply.tool_calls]})
+            messages.append({"role": "assistant", "content": reply.text, "tool_calls": [{"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments)}} for call in reply.tool_calls], "gemini_parts": reply.raw_parts})
             for call in reply.tool_calls:
                 result = workspace.call(call.name, call.arguments)
                 if call.name == "write_file" and result.startswith("Wrote") and first_write_at is None:

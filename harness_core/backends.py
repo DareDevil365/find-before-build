@@ -24,6 +24,7 @@ class Reply:
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
+    raw_parts: list[dict] = field(default_factory=list)
 
 
 def post_json(url: str, body: dict, headers: dict, timeout: float = 120) -> dict:
@@ -86,6 +87,9 @@ class GemmaAPI:
             if role == "system":
                 continue
             if role == "assistant":
+                if message.get("gemini_parts"):
+                    contents.append({"role": "model", "parts": message["gemini_parts"]})
+                    continue
                 parts = []
                 if message.get("content"):
                     parts.append({"text": str(message["content"])})
@@ -101,7 +105,11 @@ class GemmaAPI:
                 if parts:
                     contents.append({"role": "model", "parts": parts})
             elif role == "tool":
-                contents.append({"role": "user", "parts": [{"functionResponse": {"name": message.get("name") or "tool", "response": {"result": message.get("content") or ""}}}]})
+                part = {"functionResponse": {"name": message.get("name") or "tool", "response": {"result": message.get("content") or ""}}}
+                if contents and contents[-1]["role"] == "user" and all("functionResponse" in prior for prior in contents[-1]["parts"]):
+                    contents[-1]["parts"].append(part)
+                else:
+                    contents.append({"role": "user", "parts": [part]})
             else:
                 contents.append({"role": "user", "parts": [{"text": str(message.get("content") or "")} ]})
         return system, contents
@@ -127,4 +135,4 @@ class GemmaAPI:
             if fn:
                 calls.append(ToolCall(f"gemma_call_{i}", str(fn.get("name") or ""), fn.get("args") or {}))
         usage = raw.get("usageMetadata") or {}
-        return Reply("\n".join(str(p["text"]) for p in parts if "text" in p), calls, {"prompt_tokens": usage.get("promptTokenCount"), "completion_tokens": usage.get("candidatesTokenCount"), "total_tokens": usage.get("totalTokenCount")})
+        return Reply("\n".join(str(p["text"]) for p in parts if "text" in p), calls, {"prompt_tokens": usage.get("promptTokenCount"), "completion_tokens": usage.get("candidatesTokenCount"), "total_tokens": usage.get("totalTokenCount")}, parts)

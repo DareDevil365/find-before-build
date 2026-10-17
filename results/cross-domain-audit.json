@@ -1,0 +1,28 @@
+{
+  "audit_date": "2026-10-17",
+  "scope": "Observed live planner/search results and model-generated outputs; repository features beyond metadata remain unverified where GitHub enrichment was rate-limited.",
+  "cases": [
+    {
+      "task": "Scientific calculator web app",
+      "improved_queries": ["scientific calculator web app", "math expression parser javascript", "calculator app with history"],
+      "useful_candidate": "https://github.com/silentmatt/expr-eval",
+      "candidate_reason": "MIT-licensed JavaScript expression parser (486 KB reported repository size). A shallow clone at commit 6e889e0e75c50ac37d70c35388602025650e0c50 succeeded; its README and source describe parse/evaluate, trig, square root, and power support. Integration behavior remains untested.",
+      "decision_check": "Gemini 3.8 Flash selected use_dependency for silentmatt/expr-eval from the scored eligible shortlist; this checks repository choice, not finished application integration.",
+      "observed_build": "A Gemma run wrote HTML and CSS but omitted referenced script.js while reporting finished. Missing local assets now fail structural validation."
+    },
+    {
+      "task": "Localhost platform game",
+      "improved_queries": ["side scrolling platform game", "html5 2d platformer game", "2d platformer physics javascript"],
+      "useful_candidate": "https://github.com/ZeroDayArcade/HTML5_Platformer",
+      "candidate_reason": "MIT-licensed, size-eligible platformer candidate; game behavior has not been verified.",
+      "observed_build": "A local-model run wrote only README.md; documentation-only output now fails completion. Another run selected Matter.js and PixiJS, but PixiJS exceeded the clone limit; decisions now filter uninspectable sources."
+    },
+    {
+      "task": "Local AI study buddy with quiz",
+      "improved_queries": ["ai study buddy quiz chat", "llm quiz generator", "openai compatible chat webui"],
+      "useful_candidate": "https://github.com/ECuiDev/obsidian-quiz-generator",
+      "candidate_reason": "MIT-licensed quiz-generation candidate; integrating an Obsidian plugin into a standalone web app may cost more than a focused implementation.",
+      "observed_build": "Gemma wrote a Python server and browser assets; Python compilation passed, but chat and quiz behavior were not yet verified."
+    }
+  ]
+}
