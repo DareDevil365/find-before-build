@@ -89,6 +89,7 @@ class UiTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertFalse(state["running"])
+        self.assertEqual(state["workspace"], str((self.root / "runs" / ("ui-" + job_id) / "workspace").resolve()))
         self.assertEqual(state["result"]["status"], "finished")
         self.assertEqual(state["stage"], "complete")
         self.assertEqual(state["candidates"][0]["name"], "example/reusable")

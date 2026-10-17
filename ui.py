@@ -76,6 +76,7 @@ class Job:
                 "lines": self.lines[-400:],
                 "result": self.result,
                 "files": self.files(),
+                "workspace": str(self.workspace.resolve()),
             }
 
     def files(self) -> list[str]:
@@ -257,6 +258,7 @@ button{background:#4f46e5;color:white;border:0;cursor:pointer}button:disabled{op
 pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0b1220;padding:15px;border-radius:8px;max-height:390px;overflow:auto}
 ul{padding-left:22px}li{margin:4px 0}a{color:#93c5fd}.hidden{display:none}
 #status{font-weight:700}#questionText{color:#fff}
+#outputPath{display:block;overflow-wrap:anywhere;color:#cbd5e1;background:#111827;border-radius:7px;padding:10px;margin:8px 0}
 .dashboard{display:grid;grid-template-columns:minmax(0,1fr) minmax(330px,.9fr);gap:16px;align-items:start}.dashboard section{margin:0}
 @media(max-width:780px){.dashboard{grid-template-columns:1fr}}
 #stage{font-size:1.2rem;font-weight:700;margin:12px 0 4px}#detail,#repoNote{color:#cbd5e1}
@@ -270,7 +272,7 @@ ul{padding-left:22px}li{margin:4px 0}a{color:#93c5fd}.hidden{display:none}
 <section id="question" class="hidden"><h2>Clarification</h2><p id="questionText"></p><div class="row"><input id="answer" placeholder="Your answer"><button id="sendAnswer">Continue</button></div></section>
 <div class="dashboard"><section><h2>What the harness is doing</h2><div id="status">Ready</div><ol class="steps" id="steps"><li>Clarify</li><li>Search</li><li>Choose</li><li>Build</li><li>Finish</li></ol><div id="stage">Ready for a request</div><p id="detail">Start a build to see each stage.</p><details><summary>Detailed activity log</summary><pre id="logs">Your build log will appear here.</pre></details></section>
 <section><h2>GitHub repositories</h2><p id="repoNote">Search results will appear here. A green outline marks a repository chosen for reuse.</p><div id="decisionReason"></div><div id="repos"></div></section></div>
-<section><h2>Output files</h2><ul id="files"><li>Start a build to see files.</li></ul><h3>File preview</h3><pre id="preview">Select a file.</pre></section>
+<section><h2>Output files</h2><p>Saved in this folder on your computer:</p><code id="outputPath">Start a build to see its folder.</code><button id="copyPath" type="button" disabled>Copy folder path</button><ul id="files"><li>Start a build to see files.</li></ul><h3>File preview</h3><pre id="preview">Select a file.</pre></section>
 <script>
 const token='__TOKEN__';let job=null;let busy=false;let lastQuestion=null;
 const $=id=>document.getElementById(id);
@@ -282,14 +284,16 @@ let note=s.quality==='metadata_only'?'GitHub limited README or issue checks; the
 $('decisionReason').textContent=decision?(decision.action==='build_fresh'?'Decision: build fresh. No repository was chosen. ':'Decision: '+decision.action+'. ')+(decision.reason||''):'';
 for(let item of s.candidates||[]){let card=document.createElement('div');card.className='repo'+(selected.has(item.name)?' chosen':'');let title=document.createElement('a');if(/^https:\/\/github\.com\//.test(item.url||'')){title.href=item.url;title.target='_blank';title.rel='noopener noreferrer'}title.textContent=item.name;card.append(title);if(selected.has(item.name)){let badge=document.createElement('span');badge.className='badge';badge.textContent=used.has(item.name)?'Source loaded':'Chosen for reuse';card.append(badge)}let meta=document.createElement('small');meta.textContent='Score '+item.score+' · License '+item.license;card.append(meta);if(item.flags?.length){let flags=document.createElement('p');flags.textContent=item.flags.join(' · ');card.append(flags)}repos.append(card)}
 if(!s.candidates?.length){let empty=document.createElement('p');empty.textContent=s.quality==='unavailable'?'No repository results; discovery failed.':s.stage==='searching'||s.stage==='clarifying'?'Waiting for GitHub results...':'No repository results recorded.';repos.append(empty)}}
-async function start(){if(busy)return;try{let j=await api('/api/start',{method:'POST',body:JSON.stringify({task:$('task').value,backend:$('backend').value})});job=j.id;busy=true;$('start').disabled=true;$('status').textContent='Starting...';$('logs').textContent='';$('files').replaceChildren();poll()}catch(e){$('status').textContent=e.message}}
+async function start(){if(busy)return;try{let j=await api('/api/start',{method:'POST',body:JSON.stringify({task:$('task').value,backend:$('backend').value})});job=j.id;busy=true;$('start').disabled=true;$('status').textContent='Starting...';$('logs').textContent='';$('files').replaceChildren();$('outputPath').textContent='Loading folder path...';poll()}catch(e){$('status').textContent=e.message}}
 async function sendAnswer(){try{await api('/api/answer',{method:'POST',body:JSON.stringify({id:job,answer:$('answer').value})});$('answer').value='';$('question').classList.add('hidden');lastQuestion=null}catch(e){$('status').textContent=e.message}}
 async function poll(){if(!job)return;try{let s=await api('/api/state?id='+encodeURIComponent(job));let label=s.running?'Running':(s.result?.status|| (s.error?'Error':'Exited '+s.exit_code));$('status').textContent=label+(s.error?' - '+s.error:'');$('logs').textContent=s.lines.join('\n');$('logs').scrollTop=$('logs').scrollHeight;
+$('outputPath').textContent=s.workspace||'Folder path unavailable';$('copyPath').disabled=!s.workspace;
 showProgress(s);showRepos(s);
 if(s.pending_question){$('question').classList.remove('hidden');$('questionText').textContent=s.pending_question;if(lastQuestion!==s.pending_question){$('answer').focus();lastQuestion=s.pending_question}}else{$('question').classList.add('hidden');lastQuestion=null}
 let list=$('files');list.replaceChildren();for(let name of s.files){let li=document.createElement('li'),a=document.createElement('a');a.href='#';a.textContent=name;a.onclick=async e=>{e.preventDefault();try{let f=await api('/api/file?id='+encodeURIComponent(job)+'&path='+encodeURIComponent(name));$('preview').textContent=f.content}catch(err){$('preview').textContent=err.message}};li.append(a);list.append(li)}
 if(!s.running){busy=false;$('start').disabled=false}}catch(e){$('status').textContent=e.message}if(busy)setTimeout(poll,1000)}
 $('start').onclick=start;$('sendAnswer').onclick=sendAnswer;$('answer').onkeydown=e=>{if(e.key==='Enter')sendAnswer()};
+$('copyPath').onclick=async()=>{try{await navigator.clipboard.writeText($('outputPath').textContent);$('copyPath').textContent='Copied';setTimeout(()=>$('copyPath').textContent='Copy folder path',1800)}catch(e){$('copyPath').textContent='Select path above to copy'}};
 api('/api/current').then(current=>{if(current.id){job=current.id;busy=true;$('start').disabled=true;poll()}}).catch(()=>{});
 </script></body></html>"""
 
