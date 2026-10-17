@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 from pathlib import Path
 import re
 import shutil
@@ -34,7 +35,12 @@ print('@@EVENT:' + json.dumps({"stage":"choosing","detail":"Comparing candidates
 print('@@EVENT:' + json.dumps({"stage":"deciding","detail":"Reuse decision made","decision":decision,"selected":["example/reusable"]}), flush=True)
 print('@@EVENT:' + json.dumps({"stage":"coding","detail":"Writing output.txt","used":["example/reusable"]}), flush=True)
 (workspace / "output.txt").write_text("Requested: " + answer, encoding="utf-8")
-record.write_text(json.dumps({"status":"finished","written_files":["output.txt"],"discovery":{"candidates":[candidate],"quality":"live"},"decision":decision,"reuse":{"repositories":{"example/reusable":{}}}}), encoding="utf-8")
+(workspace / "index.html").write_text("<h1>Generated preview is live</h1>", encoding="utf-8")
+(workspace / "app.py").write_text('from flask import Flask\napp = Flask(__name__)\n@app.get("/")\ndef home(): return "Generated backend is live"\n', encoding="utf-8")
+(workspace / "package.json").write_text(json.dumps({"scripts":{"start":"node server.js"}}), encoding="utf-8")
+(workspace / "server.js").write_text('require("http").createServer((q,r)=>r.end("Generated Node app is live")).listen(process.env.PORT,"127.0.0.1");', encoding="utf-8")
+(workspace / "node_modules").mkdir()
+record.write_text(json.dumps({"status":"finished","written_files":["output.txt","index.html"],"discovery":{"candidates":[candidate],"quality":"live"},"decision":decision,"reuse":{"repositories":{"example/reusable":{}}}}), encoding="utf-8")
 print("Built output.txt", flush=True)
 '''
 
@@ -97,12 +103,52 @@ class UiTests(unittest.TestCase):
         self.assertEqual(state["used"], ["example/reusable"])
         self.assertEqual(state["decision"]["reason"], "Useful component")
         self.assertIn("output.txt", state["files"])
+        self.assertIn("index.html", state["files"])
+        self.assertTrue(state["preview_url"].startswith("http://127.0.0.1:"))
+        self.assertIn("Generated preview is live", urlopen(state["preview_url"]).read().decode("utf-8"))
+        if importlib.util.find_spec("flask"):
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline:
+                _, state = self.request("/api/state?id=" + job_id)
+                if any(item["status"] == "ready" for item in state["runtime_services"]):
+                    break
+                time.sleep(0.1)
+            backend = next(item for item in state["runtime_services"] if item["name"] == "Flask backend")
+            self.assertEqual(backend["status"], "ready")
+            self.assertIn("Generated backend is live", urlopen(backend["url"]).read().decode("utf-8"))
+        if shutil.which("npm.cmd" if sys.platform == "win32" else "npm"):
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                _, state = self.request("/api/state?id=" + job_id)
+                if any(item["name"] == "Node app" and item["status"] == "ready" for item in state["runtime_services"]):
+                    break
+                time.sleep(0.1)
+            node = next(item for item in state["runtime_services"] if item["name"] == "Node app")
+            self.assertEqual(node["status"], "ready")
+            self.assertIn("Generated Node app is live", urlopen(node["url"]).read().decode("utf-8"))
         self.assertEqual(self.request("/api/file?id=" + job_id + "&path=output.txt")[1]["content"], "Requested: JSON")
         self.assertEqual(self.request("/api/file?id=" + job_id + "&path=..%2Fharness.py")[0], 400)
-        restored = JobManager(self.root).current()
+        restored_manager = JobManager(self.root)
+        restored = restored_manager.current()
         self.assertIsNotNone(restored)
         self.assertEqual(restored.id, job_id)
         self.assertIn("output.txt", restored.snapshot()["files"])
+        self.assertIn("Generated preview is live", urlopen(restored.snapshot()["preview_url"]).read().decode("utf-8"))
+        expected = int(bool(importlib.util.find_spec("flask"))) + int(bool(shutil.which("npm.cmd" if sys.platform == "win32" else "npm")))
+        if expected:
+            deadline = time.monotonic() + 6
+            while time.monotonic() < deadline and len(restored_manager.services) < expected:
+                time.sleep(0.05)
+        for preview in restored_manager.previews.values():
+            preview.shutdown()
+            preview.server_close()
+        for process in restored_manager.services.values():
+            if process.poll() is None:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
+                else:
+                    process.terminate()
+                process.wait(timeout=3)
 
     def test_served_browser_script_parses(self) -> None:
         if not shutil.which("node"):

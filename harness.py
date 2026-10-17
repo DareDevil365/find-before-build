@@ -58,7 +58,7 @@ def select_gemini_api_key(name: str | None) -> str:
     for candidate in ("GEMINI_API_KEY", "GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GOOGLE_API_KEY"):
         if os.getenv(candidate):
             return os.environ[candidate]
-    raise RuntimeError("Set a GEMINI_API_KEY environment variable for the Gemma API backend")
+    raise RuntimeError("Set a GEMINI_API_KEY environment variable for the Gemini or Gemma API backend")
 
 
 def load_skill() -> str:
@@ -562,11 +562,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task", help="Feature or project to build")
     parser.add_argument("--workspace", type=Path, required=True, help="Directory the model may edit")
-    parser.add_argument("--backend", choices=["koboldcpp", "gemma-api"], default="koboldcpp")
+    parser.add_argument("--backend", choices=["koboldcpp", "gemma-api", "gemini-api"], default="gemini-api")
     parser.add_argument("--engine", choices=["auto", "aider", "native"], default="auto", help="Auto uses Aider for one named file and native tools for larger tasks")
     parser.add_argument("--aider-path", help="Path to aider executable, if not in the project cache or PATH")
-    parser.add_argument("--model", default="koboldcpp")
-    parser.add_argument("--api-key-env", help="Environment variable name for this Gemma run, e.g. GEMINI_API_KEY_2; never pass the key value")
+    parser.add_argument("--model", help="Optional model override for the selected backend")
+    parser.add_argument("--api-key-env", help="Environment variable name for an API run, e.g. GEMINI_API_KEY_2; never pass the key value")
     parser.add_argument("--base-url", default="http://127.0.0.1:5001")
     parser.add_argument("--no-discovery", action="store_true", help="Ablation only: skip find-before-build")
     parser.add_argument("--offline", action="store_true", help="Use cached GitHub evidence only")
@@ -577,8 +577,8 @@ def main() -> int:
     parser.add_argument("--max-turns", type=int, default=12)
     parser.add_argument("--record", type=Path)
     args = parser.parse_args()
-    if args.backend == "gemma-api" and args.model == "koboldcpp":
-        args.model = "gemma-4-26b-a4b-it"
+    if args.model is None:
+        args.model = {"koboldcpp": "koboldcpp", "gemma-api": "gemma-4-26b-a4b-it", "gemini-api": "gemini-2.5-flash"}[args.backend]
     try:
         result = run(args)
     except (RuntimeError, OSError) as exc:
