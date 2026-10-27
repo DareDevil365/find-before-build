@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 import time
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
@@ -25,6 +25,7 @@ from search_repos import search  # noqa: E402
 from score_repo import score_all  # noqa: E402
 from harness_core.backends import KoboldCpp, Reply, RotatingGeminiAPI  # noqa: E402
 from harness_core.clarify import questions_for  # noqa: E402
+from harness_core.projects import create_project, project_files  # noqa: E402
 from harness_core.reuse import PERMISSIVE, prepare_references, selected_names  # noqa: E402
 from harness_core.workspace import REFERENCE_TOOL_SCHEMAS, TOOL_SCHEMAS, WEB_TOOL_SCHEMA, Workspace  # noqa: E402
 
@@ -117,25 +118,26 @@ def plan_search(backend, task: str) -> tuple[dict, Reply | None]:
     fallback = queries_for(task)
     prompt = (
         "Break a software build request into reusable capabilities before searching GitHub. "
-        "Return JSON only with capabilities (2-4 short strings) and queries (2-3 short GitHub repository search strings). "
+        "Return JSON only with capabilities (2-6 task-specific reusable behaviors) and queries (2-6 short GitHub repository search strings). "
         "The first query should target the whole requested product or closest domain implementation. "
         "The remaining queries should target independently reusable capabilities or libraries needed to build it. "
         "Prioritize difficult or domain-specific components; do not spend a query on routine CLI, UI, or server scaffolding unless it is central to the request. "
         "Prefer common repository terms over incidental example values. "
-        "Do not claim a repository exists or invent repository details. Keep each query at most five words."
+        "Include a specialist or alternative approach, rather than repeating a product query. Use language: or topic: qualifiers only when justified by the task. "
+        "Do not claim a repository exists or invent repository details. Keep each query at most seven words."
     )
     try:
         reply = backend.chat([{"role": "system", "content": prompt}, {"role": "user", "content": task}])
         result = parse_json_object(reply.text)
         if not result or not isinstance(result.get("queries"), list) or not isinstance(result.get("capabilities"), list):
             raise ValueError("Invalid search plan")
-        queries = list(dict.fromkeys(str(q).strip() for q in result["queries"] if isinstance(q, str) and 2 <= len(q.strip()) <= 70 and len(q.split()) <= 5))[:3]
-        capabilities = [str(x).strip()[:80] for x in result["capabilities"] if isinstance(x, str) and x.strip()][:4]
+        queries = list(dict.fromkeys(str(q).strip() for q in result["queries"] if isinstance(q, str) and 2 <= len(q.strip()) <= 120 and len(q.split()) <= 7))[:6]
+        capabilities = [str(x).strip()[:100] for x in result["capabilities"] if isinstance(x, str) and x.strip()][:6]
         if len(queries) < 2 or not capabilities:
             raise ValueError("Search plan was too sparse")
         task_terms = set(re.findall(r"[a-z0-9]{3,}", " ".join(fallback)))
         if len(task_terms) >= 2 and max(len(set(re.findall(r"[a-z0-9]{3,}", q.lower())) & task_terms) for q in queries) < 2:
-            queries = list(dict.fromkeys([fallback[0], *queries]))[:3]
+            queries = list(dict.fromkeys([fallback[0], *queries]))[:6]
         return {"capabilities": capabilities, "queries": queries, "source": "model"}, reply
     except (RuntimeError, ValueError):
         return {"capabilities": [], "queries": fallback, "source": "deterministic_fallback"}, None
@@ -157,7 +159,7 @@ def parse_json_object(text: str) -> dict | None:
 
 
 def choose_decision(backend, task: str, scored: dict, skill_instructions: str) -> tuple[dict, Reply | None]:
-    candidates = [{"name": x["full_name"], "url": x["url"], "score": x["score"], "signals": x["signals"], "flags": x["flags"], "description": x["description"], "matched_queries": x.get("matched_queries", [])} for x in scored.get("ranked", []) if x["signals"]["license"]["reason"] in PERMISSIVE and isinstance(x.get("size_kb"), int) and x["size_kb"] <= 50_000]
+    candidates = [{"name": x["full_name"], "url": x["url"], "score": x["score"], "signals": x["signals"], "flags": x["flags"], "description": x["description"], "matched_queries": x.get("matched_queries", []), "match_kind": x.get("match_kind"), "capability_matches": x.get("capability_matches", []), "evidence": x.get("evidence", [])} for x in scored.get("ranked", []) if x["signals"]["license"]["reason"] in PERMISSIVE and isinstance(x.get("size_kb"), int) and x["size_kb"] <= 50_000]
     if not candidates:
         return {"action": "build_fresh", "repository": None, "repositories": [], "reason": "No searched repository passed the verified license and size checks for source inspection.", "integration": "Build in the selected workspace.", "unknowns": ["Other repositories or a broader search may still be useful."]}, None
     prompt = (
@@ -175,7 +177,7 @@ def choose_decision(backend, task: str, scored: dict, skill_instructions: str) -
         "\"integration\": one short sentence, \"unknowns\": array of short strings}. "
         "Use combine only if two or three complementary repos have genuinely useful parts. "
         "Choose build_fresh if no candidate is clearly useful. Do not claim README features were verified. "
-        f"Relevant agent skill:\n{skill_instructions[:5000]}"
+        f"Relevant agent skill:\n{skill_instructions}"
     )
     try:
         reply = backend.chat([{"role": "system", "content": prompt}, {"role": "user", "content": json.dumps({"task": task, "evidence": candidates}, ensure_ascii=False)}])
@@ -200,9 +202,10 @@ def choose_decision(backend, task: str, scored: dict, skill_instructions: str) -
 
 
 def snapshot(root: Path) -> dict[str, str]:
+    root = root.resolve()
     result = {}
-    for path in root.rglob("*"):
-        if path.is_file() and path.stat().st_size <= 100_000 and not any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts):
+    for path in project_files(root):
+        if path.stat().st_size <= 100_000:
             try:
                 result[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
             except UnicodeError:
@@ -267,7 +270,7 @@ class _AssetParser(HTMLParser):
             self.paths.append(values["href"])
 
 
-def structural_issues(files: dict[str, str]) -> list[str]:
+def structural_issues(files: dict[str, str], root: Path | None = None) -> list[str]:
     """Check generated source syntax and local HTML dependencies without running code."""
     issues: list[str] = []
     for name, content in files.items():
@@ -285,12 +288,16 @@ def structural_issues(files: dict[str, str]) -> list[str]:
             parser = _AssetParser()
             parser.feed(content)
             for raw in parser.paths:
+                if "{{" in raw or "{%" in raw:
+                    continue  # Template expressions are resolved by the server.
                 parsed = urlsplit(raw)
                 if parsed.scheme or parsed.netloc or not parsed.path:
                     continue
                 base = "" if parsed.path.startswith("/") else posixpath.dirname(name)
-                target = posixpath.normpath(posixpath.join(base, parsed.path.lstrip("/")))
-                if target not in files:
+                target = posixpath.normpath(posixpath.join(base, unquote(parsed.path).lstrip("/")))
+                asset = (root / target).resolve() if root is not None else None
+                exists = asset is not None and asset.is_relative_to(root.resolve()) and asset.is_file()
+                if target not in files and not exists:
                     issues.append(f"{name}: missing local asset {target}")
     return issues[:20]
 
@@ -359,10 +366,25 @@ def delivery_issues(task: str, files: dict[str, str]) -> list[str]:
     return issues[:10]
 
 
+def requested_files(task: str) -> list[str]:
+    """Keep relative directories in explicit filenames, including Windows paths."""
+    pattern = r"(?<![\w./\\:-])(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z_][A-Za-z0-9_-]*\.(?:py|md|js|jsx|ts|tsx|html|css|json|txt|go|rs|java|sql|yaml|yml)\b"
+    names = [name.replace("\\", "/") for name in re.findall(pattern, task, re.I)]
+    return list(dict.fromkeys(name for name in names if ".." not in name.split("/")))
+
+
+def completion_issues(task: str, files: dict[str, str], root: Path) -> list[str]:
+    issues = structural_issues(files, root) + delivery_issues(task, files)
+    for name in requested_files(task):
+        path = (root / name).resolve()
+        if not path.is_relative_to(root.resolve()) or not path.is_file():
+            issues.append(f"Missing requested file: {name}")
+    return issues
+
+
 def planned_files(task: str, workspace: Workspace) -> list[str]:
     """Make Aider's edit scope explicit, especially for small local models."""
-    mentioned = re.findall(r"\b[A-Za-z_][A-Za-z0-9_-]*\.(?:py|md|js|ts|tsx|html|css|json|txt|go|rs|java|sql|yaml|yml)\b", task, re.I)
-    names = list(dict.fromkeys(mentioned))[:8]
+    names = requested_files(task)[:8]
     if not names:
         existing = [path.relative_to(workspace.root).as_posix() for path in workspace.root.iterdir() if path.is_file() and not path.name.startswith(".")]
         names = existing[:8] or (["index.html", "README.md"] if any(word in task.lower() for word in ("website", "webpage", "landing page")) else ["main.py", "README.md"])
@@ -477,7 +499,7 @@ def run(args: argparse.Namespace) -> dict:
     allowed_urls = {url.rstrip(".,;)]") for url in re.findall(r"https://[^\s\"'<>]+", args.task)}
     workspace = Workspace(args.workspace, confirm_commands=not args.no_commands, ask_user=ask_question, allowed_urls=allowed_urls)
     if args.engine == "auto":
-        mentioned = re.findall(r"\b[A-Za-z_][A-Za-z0-9_-]*\.(?:py|md|js|ts|tsx|html|css|json|txt|go|rs|java|sql|yaml|yml)\b", args.task, re.I)
+        mentioned = requested_files(args.task)
         aider_available = bool((ROOT / ".cache" / "aider-venv" / "Scripts" / "aider.exe").exists() or shutil.which("aider") or args.aider_path)
         args.engine = "aider" if len(set(mentioned)) == 1 and aider_available else "native"
         print(f"Selected coding engine: {args.engine}", flush=True)
@@ -534,10 +556,11 @@ def run(args: argparse.Namespace) -> dict:
         progress("searching", "Searching GitHub for reusable projects and components", queries=queries)
         print(f"Searching GitHub: {queries}", flush=True)
         try:
-            evidence = search(queries, max_results=9, offline=args.offline)
-            scored = score_all(evidence, args.task)
+            evidence = search(queries, max_results=9, cache_dir=ROOT / ".cache" / "github", offline=args.offline)
+            scored = score_all(evidence, args.task, capabilities=search_plan.get("capabilities"))
             scored_ranked = scored["ranked"]
             discovery = {"status": evidence["source"], "quality": evidence.get("quality", "unknown"), "search_plan": search_plan, "queries": queries, "retrieved_at": evidence["retrieved_at"], "candidates": [{"name": x["full_name"], "url": x["url"], "score": x["score"], "license": x["signals"]["license"]["reason"], "flags": x["flags"]} for x in scored["ranked"]], "warning": evidence.get("warning")}
+            discovery.update({"query_runs": evidence.get("query_runs", []), "coverage": evidence.get("coverage"), "warnings": evidence.get("warnings", []), "score_version": scored.get("score_version")})
             progress("choosing", "Comparing repository fit, license, and integration cost", candidates=discovery["candidates"], quality=discovery["quality"])
             decision, reply = choose_decision(backend, args.task, scored, skill_instructions)
             if reply:
@@ -629,7 +652,7 @@ def run(args: argparse.Namespace) -> dict:
                 empty_replies = 0
             if not reply.tool_calls:
                 current_files = snapshot(workspace.root)
-                issues = structural_issues(current_files) + delivery_issues(args.task, current_files)
+                issues = completion_issues(args.task, current_files, workspace.root)
                 if (not implementation_written(workspace.log, args.task) or issues) and turn + 1 < args.max_turns:
                     messages.append({"role": "assistant", "content": reply.text})
                     detail = "; ".join(issues[:5]) if issues else "the requested implementation is still missing"
@@ -650,15 +673,14 @@ def run(args: argparse.Namespace) -> dict:
     after = snapshot(workspace.root)
     if args.engine == "aider":
         status = classify_aider_result(status, before, after, files, final_text)
-    elif status == "finished":
-        expected = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_-]*\.(?:py|md|js|ts|tsx|html|css|json|txt|go|rs|java|sql|yaml|yml)\b", args.task, re.I))
-        if any(name not in after for name in expected) or structural_issues(after) or delivery_issues(args.task, after):
-            status = "partial_edit"
+    if status == "finished" and completion_issues(args.task, after, workspace.root):
+        status = "partial_edit"
     record = {
         "task": args.task, "original_task": original_task, "clarifications": clarifications, "backend": args.backend, "model": args.model, "engine": args.engine, "prepared_files": files,
         "started_at": started_at, "elapsed_seconds": round(time.monotonic() - start, 2),
         "status": status, "discovery": discovery, "decision": decision,
-        "structural_issues": structural_issues(after),
+        "structural_issues": structural_issues(after, workspace.root),
+        "completion_issues": completion_issues(args.task, after, workspace.root),
         "reuse": {"repositories": {name: {"url": ref["url"], "license": ref["license"], "commit": ref["commit"]} for name, ref in references.items()}, "warnings": reuse_warnings},
         "model_calls": calls, "token_usage": usage, "models_used": sorted(getattr(backend, "models_used", {args.model})), "token_usage_note": "Aider console counts can be rounded" if args.engine == "aider" else "Backend API usage",
         "first_write_seconds": first_write_at,
@@ -680,7 +702,8 @@ def main() -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("task", help="Feature or project to build")
-    parser.add_argument("--workspace", type=Path, required=True, help="Directory the model may edit")
+    parser.add_argument("--workspace", type=Path, help="Directory the model may edit (default: Results/<project-name>)")
+    parser.add_argument("--name", help="Readable project folder name when --workspace is omitted")
     parser.add_argument("--backend", choices=["koboldcpp", "gemma-api", "gemini-api"], default="gemini-api")
     parser.add_argument("--engine", choices=["auto", "aider", "native"], default="auto", help="Auto uses Aider for one named file and native tools for larger tasks")
     parser.add_argument("--aider-path", help="Path to aider executable, if not in the project cache or PATH")
@@ -699,6 +722,14 @@ def main() -> int:
     if args.model is None:
         args.model = {"koboldcpp": "koboldcpp", "gemma-api": "gemma-4-26b-a4b-it", "gemini-api": "gemini-2.5-flash"}[args.backend]
     try:
+        if args.workspace is None:
+            args.workspace = create_project(ROOT, args.task, args.name)
+            if args.record is None:
+                run_dir = ROOT / "runs" / "builds" / args.workspace.name
+                run_dir.mkdir(parents=True)
+                (run_dir / "build.json").write_text(json.dumps({"workspace": args.workspace.relative_to(ROOT).as_posix(), "created_at": datetime.now(timezone.utc).isoformat()}, indent=2) + "\n", encoding="utf-8")
+                args.record = run_dir / "record.json"
+            print(f"Program folder: {args.workspace}", flush=True)
         result = run(args)
     except (RuntimeError, OSError) as exc:
         print(f"Harness error: {exc}", file=sys.stderr)

@@ -1,0 +1,48 @@
+{
+  "client_date": "2026-10-23",
+  "tests": {
+    "total": 69,
+    "passed": 68,
+    "skipped": 1,
+    "skip_reason": "Windows symlink unavailable"
+  },
+  "skills_validated": [
+    "search-with-evidence",
+    "find-before-build"
+  ],
+  "package_checks": [
+    "isolated --help on all helpers",
+    "relative Markdown references",
+    "synthetic general-helper CLI input/output",
+    "no local state or credentials in archives"
+  ],
+  "live_smoke": {
+    "queries": [
+      "pdf bookmarks language:Python",
+      "pdf merge in:readme language:Python"
+    ],
+    "candidate_count": 6,
+    "inspected_repository": "py-pdf/pypdf",
+    "commit": "fd379e69be44dd91acb5f1d62ba1179e9cbc20ca",
+    "observed_files": [
+      "LICENSE",
+      "README.md",
+      "pyproject.toml",
+      "pypdf/_writer.py",
+      "tests/test_merger.py"
+    ],
+    "repository_code_executed": false
+  },
+  "document": {
+    "pdf_pages": 16,
+    "diagrams": 6,
+    "pdf_rendered_with": "Poppler",
+    "visual_review": "all-page contact sheet and HTML desktop layout"
+  },
+  "limitations": [
+    "No controlled comparison against baseline-agent search",
+    "No claim of superiority over search providers or existing skills",
+    "General course/paper/database workflow has not been benchmarked end to end",
+    "Heuristic scores and model judgments are not calibrated probabilities"
+  ]
+}

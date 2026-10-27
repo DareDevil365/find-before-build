@@ -1,0 +1,4 @@
+interface:
+  display_name: "Find Before Build"
+  short_description: "Investigate GitHub and compare reusable repositories"
+  default_prompt: "Use $find-before-build to investigate GitHub repositories for my task, inspect the strongest candidates, and recommend the best-supported reuse approach."

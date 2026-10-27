@@ -25,6 +25,8 @@ import threading
 import time
 from urllib.parse import parse_qs, urlsplit
 
+from harness_core.projects import create_project, project_files
+
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 20_000
@@ -145,9 +147,7 @@ class Job:
     def files(self) -> list[str]:
         return sorted(
             path.relative_to(self.workspace).as_posix()
-            for path in self.workspace.rglob("*")
-            if path.is_file() and not path.is_symlink()
-            and not any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(self.workspace).parts)
+            for path in project_files(self.workspace)
         )
 
     def answer(self, value: str) -> None:
@@ -166,7 +166,7 @@ class Job:
 
 class JobManager:
     def __init__(self, root: Path = ROOT):
-        self.root = root
+        self.root = root.resolve()
         self.jobs: dict[str, Job] = {}
         self.previews: dict[str, ThreadingHTTPServer] = {}
         self.services: dict[str, subprocess.Popen] = {}
@@ -175,12 +175,22 @@ class JobManager:
 
     def _restore_latest_completed(self) -> None:
         runs = self.root / "runs"
-        for run_dir in sorted(runs.glob("ui-*") if runs.exists() else [], key=lambda path: path.name, reverse=True):
+        folders = list((runs / "builds").glob("*")) + list(runs.glob("ui-*"))
+        for run_dir in sorted((path for path in folders if (path / "record.json").is_file()), key=lambda path: (path / "record.json").stat().st_mtime_ns, reverse=True):
             record = run_dir / "record.json"
-            workspace = run_dir / "workspace"
-            if not record.is_file() or not workspace.is_dir():
-                continue
             try:
+                manifest_file = run_dir / "build.json"
+                if manifest_file.is_file():
+                    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+                    workspace = (self.root / manifest["workspace"]).resolve()
+                    if not workspace.is_relative_to((self.root / "Results").resolve()):
+                        continue
+                    job_id = run_dir.name
+                else:
+                    workspace = run_dir / "workspace"
+                    job_id = run_dir.name[3:]
+                if not workspace.is_dir():
+                    continue
                 result = json.loads(record.read_text(encoding="utf-8"))
                 if not isinstance(result, dict):
                     continue
@@ -188,7 +198,7 @@ class JobManager:
                 selected = decision.get("repositories") or ([decision["repository"]] if decision.get("repository") else [])
                 discovery = result.get("discovery") or {}
                 error = str(discovery.get("error", ""))
-                job = Job(run_dir.name[3:], str(result.get("original_task") or result.get("task") or ""), str(result.get("backend") or ""), workspace, record)
+                job = Job(job_id, str(result.get("original_task") or result.get("task") or ""), str(result.get("backend") or ""), workspace, record)
                 job.result = result
                 job.exit_code = 0 if result.get("status") == "finished" else 2
                 job.stage = "complete"
@@ -208,7 +218,7 @@ class JobManager:
             except (OSError, ValueError, TypeError, KeyError):
                 continue
 
-    def start(self, task: str, backend: str, no_questions: bool = False, web_app: bool = False) -> Job:
+    def start(self, task: str, backend: str, no_questions: bool = False, web_app: bool = False, name: str = "") -> Job:
         task = task.strip()
         if not 3 <= len(task) <= 6000:
             raise ValueError("Enter a request between 3 and 6,000 characters")
@@ -216,13 +226,16 @@ class JobManager:
             raise ValueError("Choose KoboldCpp, Gemma, or Gemini")
         if not isinstance(no_questions, bool) or not isinstance(web_app, bool):
             raise ValueError("Invalid build setting")
+        if not isinstance(name, str) or len(name) > 100:
+            raise ValueError("Project name must be at most 100 characters")
         with self.lock:
             if any(job.snapshot()["running"] for job in self.jobs.values()):
                 raise ValueError("A build is already running. Finish it before starting another.")
-            job_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
-            run_dir = self.root / "runs" / ("ui-" + job_id)
-            workspace = run_dir / "workspace"
-            workspace.mkdir(parents=True)
+            workspace = create_project(self.root, task, name)
+            job_id = workspace.name
+            run_dir = self.root / "runs" / "builds" / job_id
+            run_dir.mkdir(parents=True)
+            (run_dir / "build.json").write_text(json.dumps({"workspace": workspace.relative_to(self.root.resolve()).as_posix(), "created_at": datetime.now(timezone.utc).isoformat()}, indent=2) + "\n", encoding="utf-8")
             job = Job(job_id, task, backend, workspace, run_dir / "record.json")
             self.jobs[job_id] = job
 
@@ -452,7 +465,7 @@ details{margin-top:21px;border-top:1px solid var(--line);padding-top:13px}summar
 <main class="shell"><header class="topbar"><div class="brand"><div class="mark" aria-hidden="true"><span>F/B</span></div><div><div class="eyebrow">Project intelligence / local console</div><div class="brandname">FIND BEFORE BUILD</div></div></div><div class="topmeta"><span class="led" aria-hidden="true"></span><span>LOCAL SYSTEM READY</span></div></header>
 <div class="hero"><div><div class="eyebrow">01 / DISCOVER &nbsp; 02 / DECIDE &nbsp; 03 / BUILD</div><h1>Build smarter.<br><span>Start with what exists.</span></h1><p>Describe your idea. The harness checks GitHub for reusable work, explains its choice, then builds with your selected model.</p></div><div class="orbit" aria-hidden="true"><b>F / B</b></div></div>
 <section><div class="sectionhead"><h2>Mission brief</h2><span class="tag">Input / 001</span></div><p class="hint">Be specific about the platform, features, and what should work when the build is done.</p><label class="eyebrow" for="task">Your request</label><textarea id="task" placeholder="Build a web calculator with keyboard input and a clean interface..."></textarea>
-<div class="controls"><div><label for="backend">Model</label><select id="backend"><option value="gemini-api">Gemini (2.5 / 3.8 Flash auto)</option><option value="gemma-api">Gemma 4 API</option><option value="koboldcpp">Local model (KoboldCpp)</option></select><label class="fastoption"><input id="webApp" type="checkbox" checked> Build a web app with a localhost link</label><label class="fastoption"><input id="noQuestions" type="checkbox"> Fast mode: build with sensible defaults, without pausing for questions</label></div><div class="row"><button id="lastBuild" type="button" class="hidden">View last build</button><button id="newRequest" type="button" class="hidden">New request</button><button id="start" type="button" class="primary">Find and build →</button></div></div></section>
+<div class="controls"><div><label for="projectName">Program name (optional)</label><input id="projectName" maxlength="100" placeholder="e.g. scientific-calculator" style="margin-bottom:12px;max-width:100%"><label for="backend">Model</label><select id="backend"><option value="gemini-api">Gemini (2.5 / 3.8 Flash auto)</option><option value="gemma-api">Gemma 4 API</option><option value="koboldcpp">Local model (KoboldCpp)</option></select><label class="fastoption"><input id="webApp" type="checkbox" checked> Build a web app with a localhost link</label><label class="fastoption"><input id="noQuestions" type="checkbox"> Fast mode: build with sensible defaults, without pausing for questions</label></div><div class="row"><button id="lastBuild" type="button" class="hidden">View last build</button><button id="newRequest" type="button" class="hidden">New request</button><button id="start" type="button" class="primary">Find and build →</button></div></div></section>
 <section id="question" class="hidden"><div class="sectionhead"><h2>Clarification needed</h2><span class="tag">Human input</span></div><p id="questionText"></p><div class="row"><input id="answer" aria-label="Your answer" placeholder="Type your answer"><button id="sendAnswer" type="button" class="primary">Continue →</button></div></section>
 <div class="dashboard"><section><div class="sectionhead"><h2>Build telemetry</h2><span id="status" role="status">Ready</span></div><ol class="steps" id="steps"><li>Clarify</li><li>Search</li><li>Choose</li><li>Build</li><li>Finish</li></ol><div id="stage">Ready for a request</div><p id="detail">Launch a mission to see each stage in real time.</p><details><summary>Open detailed activity log</summary><pre id="logs">Your build log will appear here.</pre></details></section>
 <section><div class="sectionhead"><h2>Repository intelligence</h2><span class="tag">GitHub / scan</span></div><p id="repoNote">Search results will appear here. A green outline marks a repository chosen for reuse.</p><div id="decisionReason" class="decision"></div><div id="repos" class="reposlist"></div></section></div>
@@ -468,7 +481,7 @@ let note=s.quality==='metadata_only'?'GitHub limited README or issue checks; the
 $('decisionReason').textContent=decision?(decision.action==='build_fresh'?'Decision: build fresh. No repository was chosen. ':'Decision: '+decision.action+'. ')+(decision.reason||''):'';
 for(let item of s.candidates||[]){let card=document.createElement('div');card.className='repo'+(selected.has(item.name)?' chosen':'');let title=document.createElement('a');if(/^https:\/\/github\.com\//.test(item.url||'')){title.href=item.url;title.target='_blank';title.rel='noopener noreferrer'}title.textContent=item.name;card.append(title);if(selected.has(item.name)){let badge=document.createElement('span');badge.className='badge';badge.textContent=used.has(item.name)?'Source loaded':'Chosen for reuse';card.append(badge)}let meta=document.createElement('small');meta.textContent='Score '+item.score+' · License '+item.license;card.append(meta);if(item.flags?.length){let flags=document.createElement('p');flags.textContent=item.flags.join(' · ');card.append(flags)}repos.append(card)}
 if(!s.candidates?.length){let empty=document.createElement('p');empty.textContent=s.quality==='unavailable'?'No repository results; discovery failed.':s.stage==='searching'||s.stage==='clarifying'?'Waiting for GitHub results...':'No repository results recorded.';repos.append(empty)}}
-async function start(){if(busy)return;try{let j=await api('/api/start',{method:'POST',body:JSON.stringify({task:$('task').value,backend:$('backend').value,no_questions:$('noQuestions').checked,web_app:$('webApp').checked})});job=j.id;lastBuildId=job;busy=true;$('start').disabled=true;$('lastBuild').classList.add('hidden');$('newRequest').classList.add('hidden');$('previewLaunch').classList.add('hidden');$('status').textContent='Starting...';$('logs').textContent='';$('files').replaceChildren();$('outputPath').textContent='Loading folder path...';poll()}catch(e){$('status').textContent=e.message}}
+async function start(){if(busy)return;try{let j=await api('/api/start',{method:'POST',body:JSON.stringify({task:$('task').value,name:$('projectName').value,backend:$('backend').value,no_questions:$('noQuestions').checked,web_app:$('webApp').checked})});job=j.id;lastBuildId=job;busy=true;$('start').disabled=true;$('lastBuild').classList.add('hidden');$('newRequest').classList.add('hidden');$('previewLaunch').classList.add('hidden');$('status').textContent='Starting...';$('logs').textContent='';$('files').replaceChildren();$('outputPath').textContent='Loading folder path...';poll()}catch(e){$('status').textContent=e.message}}
 async function sendAnswer(){try{await api('/api/answer',{method:'POST',body:JSON.stringify({id:job,answer:$('answer').value})});$('answer').value='';$('question').classList.add('hidden');lastQuestion=null}catch(e){$('status').textContent=e.message}}
 async function poll(){if(!job)return;let refreshServices=false;try{let s=await api('/api/state?id='+encodeURIComponent(job));let label=s.pending_question?'Waiting for your answer':s.running?'Running':(s.result?.status|| (s.error?'Error':'Exited '+s.exit_code));$('status').textContent=label+(s.error?' - '+s.error:'');$('logs').textContent=s.lines.join('\n');$('logs').scrollTop=$('logs').scrollHeight;
 $('outputPath').textContent=s.workspace||'Folder path unavailable';$('copyPath').disabled=!s.workspace;
@@ -482,7 +495,7 @@ let list=$('files');list.replaceChildren();for(let name of s.files){let li=docum
 if(!s.running){busy=false;$('start').disabled=false;$('newRequest').classList.remove('hidden')}}catch(e){$('status').textContent=e.message}if(busy||refreshServices)setTimeout(poll,1000)}
 $('start').onclick=start;$('sendAnswer').onclick=sendAnswer;$('answer').onkeydown=e=>{if(e.key==='Enter')sendAnswer()};
 $('copyPath').onclick=async()=>{try{await navigator.clipboard.writeText($('outputPath').textContent);$('copyPath').textContent='Copied';setTimeout(()=>$('copyPath').textContent='Copy path',1800)}catch(e){$('copyPath').textContent='Select path above to copy'}};
-$('newRequest').onclick=()=>{if(busy)return;job=null;$('task').value='';$('status').textContent='Ready';$('stage').textContent='Standing by';$('detail').textContent='Describe your project to begin.';$('logs').textContent='';$('repoNote').textContent='Repository search has not started.';$('decisionReason').textContent='';$('repos').replaceChildren();$('files').innerHTML='<li>Start a build to see files.</li>';$('preview').textContent='Select a file.';$('outputPath').textContent='Start a build to see its folder.';$('copyPath').disabled=true;$('previewLaunch').classList.add('hidden');$('runtimeServices').replaceChildren();$('question').classList.add('hidden');$('newRequest').classList.add('hidden');$('lastBuild').classList.toggle('hidden',!lastBuildId);for(let li of $('steps').children)li.className=''};
+$('newRequest').onclick=()=>{if(busy)return;job=null;$('task').value='';$('projectName').value='';$('status').textContent='Ready';$('stage').textContent='Standing by';$('detail').textContent='Describe your project to begin.';$('logs').textContent='';$('repoNote').textContent='Repository search has not started.';$('decisionReason').textContent='';$('repos').replaceChildren();$('files').innerHTML='<li>Start a build to see files.</li>';$('preview').textContent='Select a file.';$('outputPath').textContent='Start a build to see its folder.';$('copyPath').disabled=true;$('previewLaunch').classList.add('hidden');$('runtimeServices').replaceChildren();$('question').classList.add('hidden');$('newRequest').classList.add('hidden');$('lastBuild').classList.toggle('hidden',!lastBuildId);for(let li of $('steps').children)li.className=''};
 $('lastBuild').onclick=()=>{if(!lastBuildId||busy)return;job=lastBuildId;busy=true;$('start').disabled=true;$('lastBuild').classList.add('hidden');poll()};
 api('/api/current').then(current=>{if(job)return;if(current.id){lastBuildId=current.id;if(current.running){job=current.id;busy=true;$('start').disabled=true;poll()}else{$('lastBuild').classList.remove('hidden')}}}).catch(()=>{});
 </script></body></html>"""
@@ -568,7 +581,7 @@ def create_server(root: Path = ROOT, host: str = "127.0.0.1", port: int = 8765) 
                 if not isinstance(body, dict):
                     raise ValueError("Expected a JSON object")
                 if self.path == "/api/start":
-                    job = manager.start(str(body.get("task", "")), str(body.get("backend", "")), body.get("no_questions", False), body.get("web_app", False))
+                    job = manager.start(str(body.get("task", "")), str(body.get("backend", "")), body.get("no_questions", False), body.get("web_app", False), body.get("name", ""))
                     self._send(200, {"id": job.id})
                 elif self.path == "/api/answer":
                     answer = body.get("answer", "")

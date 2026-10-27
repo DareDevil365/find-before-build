@@ -28,6 +28,32 @@ search_repos = load_script("search_repos")
 class ScoringTests(unittest.TestCase):
     NOW = datetime(2026, 10, 17, tzinfo=timezone.utc)
 
+    def test_language_inference_does_not_confuse_the_verb_go(self):
+        self.assertIsNone(score_repo.requested_language("Go through repositories and find a PDF library"))
+        self.assertEqual(score_repo.requested_language("Write a PDF tool in Go"), "go")
+
+    def test_fit_and_runtime_outrank_popularity_and_resource_indexes(self):
+        common = {"license": "MIT", "pushed_at": "2026-10-01T00:00:00Z", "size_kb": 500, "recent_closed_issues": 3, "readme": "Usage: install the package"}
+        specialist = {**common, "full_name": "demo/pdf-bookmarks", "description": "PDF merge and bookmark preservation", "language": "Python", "stars": 5}
+        wrong_runtime = {**specialist, "full_name": "demo/pdf-java", "language": "Java", "stars": 100000}
+        index = {**specialist, "full_name": "demo/awesome-pdf", "description": "Curated list of PDF merge and bookmark tools", "stars": 100000}
+        unrelated = {**common, "full_name": "demo/weather", "description": "Weather forecasting", "language": "Python", "stars": 100000}
+        ranked = score_repo.score_all({"candidates": [unrelated, wrong_runtime, index, specialist]}, "PDF merge bookmark", language="Python")["ranked"]
+        self.assertEqual(ranked[0]["full_name"], specialist["full_name"])
+        self.assertLessEqual(next(item for item in ranked if item["full_name"] == unrelated["full_name"])["score"], 25)
+        self.assertEqual(next(item for item in ranked if item["full_name"] == index["full_name"])["role"], "discovery_index")
+        self.assertTrue(all("bm25" in item["features"] for item in ranked))
+
+    def test_component_fit_and_evidence_updates_are_explicit(self):
+        repo = {"full_name": "demo/math-parser", "description": "Math expression parser", "license": "MIT"}
+        result = score_repo.score_one(repo, "Build a scientific calculator", self.NOW, capabilities=["math expression parser"])
+        self.assertEqual(result["match_kind"], "component_match")
+        self.assertEqual(result["capability_matches"][0]["coverage"], 1)
+        merged = score_repo.merge_evidence([{"candidates": [{**repo, "matched_queries": ["math parser"]}]}, {"candidates": [{"full_name": "DEMO/math-parser", "license": None, "matched_queries": ["expression evaluator"]}]}])
+        self.assertEqual(len(merged["candidates"]), 1)
+        self.assertIsNone(merged["candidates"][0]["license"])
+        self.assertEqual(len(merged["candidates"][0]["matched_queries"]), 2)
+
     def test_transparent_signal_weights_and_cautions(self):
         repo = {
             "full_name": "example/cleaner", "url": "https://github.com/example/cleaner",
@@ -36,9 +62,9 @@ class ScoringTests(unittest.TestCase):
             "recent_closed_issues": 3, "open_issues": 1, "stars": 100,
         }
         result = score_repo.score_one(repo, "Build a CSV cleaner", self.NOW)
-        self.assertEqual(result["signals"]["license"]["points"], 25)
-        self.assertEqual(result["signals"]["activity"]["points"], 25)
-        self.assertEqual(result["signals"]["maintenance"]["points"], 15)
+        self.assertEqual(result["signals"]["license"]["points"], 15)
+        self.assertEqual(result["signals"]["activity"]["points"], 10)
+        self.assertEqual(result["signals"]["maintenance"]["points"], 5)
         self.assertTrue(0 <= result["score"] <= 100)
         self.assertEqual(result["flags"], [])
 
@@ -57,6 +83,26 @@ class ScoringTests(unittest.TestCase):
 
 
 class SearchTests(unittest.TestCase):
+    def test_one_failed_query_preserves_success_and_marks_incomplete_coverage(self):
+        def fetch(path, token, timeout=12):
+            if "broken" in path:
+                raise RuntimeError("GitHub HTTP 422: invalid qualifier")
+            return {"items": [{"full_name": "demo/usable", "language": "Python", "topics": ["pdf"]}], "total_count": 40, "incomplete_results": True}
+        with tempfile.TemporaryDirectory() as directory, patch.object(search_repos, "fetch_json", side_effect=fetch):
+            result = search_repos.search(["broken", "pdf"], 10, Path(directory), enrich=False)
+        self.assertEqual(result["candidates"][0]["full_name"], "demo/usable")
+        self.assertEqual(result["coverage"], "partial")
+        self.assertEqual([run["status"] for run in result["query_runs"]], ["error", "ok"])
+        self.assertIn("archived:false", result["query_runs"][1]["executed_query"])
+        self.assertEqual(result["query_runs"][1]["total_count"], 40)
+
+    def test_qualifiers_do_not_create_false_related_cache_overlap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            saved = {"queries": ["weather forecasting language:Python archived:false"], "retrieved_at": search_repos.now_iso(), "candidates": [{"full_name": "demo/weather"}]}
+            (cache / "weather.json").write_text(json.dumps(saved))
+            self.assertIsNone(search_repos.related_cached_result(cache, ["pdf bookmarks language:Python archived:false"], 10, "failed"))
+
     def test_rate_limit_uses_only_recent_related_cache(self):
         with tempfile.TemporaryDirectory() as temp:
             cache = Path(temp)

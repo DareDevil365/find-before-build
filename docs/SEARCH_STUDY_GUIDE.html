@@ -1,0 +1,531 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>How an agent can search better</title><style>
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:#172033;background:#edf2f7;font:17px/1.72 system-ui,Segoe UI,Arial,sans-serif}.layout{max-width:1450px;margin:auto;display:grid;grid-template-columns:270px minmax(0,1fr);gap:34px;padding:34px}nav{position:sticky;top:25px;align-self:start;max-height:92vh;overflow:auto;padding:20px;background:#fff;border-radius:14px}nav strong{font-size:13px;letter-spacing:.12em;text-transform:uppercase}nav a{display:block;font-size:13px;line-height:1.45;margin-top:11px;color:#334155;text-decoration:none}nav a:hover{color:#0369a1}main{padding:44px 52px;background:#fff;border-radius:18px;box-shadow:0 8px 34px #16324f0b;min-width:0}h1{font-size:43px;line-height:1.17;letter-spacing:-.04em;margin-top:0;color:#0f172a}h2{font-size:27px;line-height:1.3;letter-spacing:-.02em;margin-top:58px;padding-top:15px;border-top:2px solid #cbd5e1;scroll-margin-top:20px}h3{font-size:21px;line-height:1.4;margin-top:32px}p{margin:15px 0}a{color:#0369a1;text-underline-offset:3px;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;font-size:14px;line-height:1.55;margin:23px 0}th,td{padding:12px 13px;border:1px solid #d7e0ea;text-align:left;vertical-align:top}th{background:#eef6fc;color:#163b56}tr:nth-child(even){background:#f8fafc}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f5f9;padding:20px;border-radius:10px;font-size:13px;line-height:1.6}code{font-family:Consolas,monospace;font-size:.88em}:not(pre)>code{background:#edf2f7;padding:2px 4px;border-radius:4px}.diagram{display:block;width:100%;height:auto;background:#fff;margin:26px 0;border:1px solid #d7e0ea;border-radius:12px}li{margin:9px 0}.tools{display:flex;gap:12px;margin-bottom:24px;font-size:13px}.tools a{padding:7px 11px;background:#edf5fc;border-radius:6px}
+@media(max-width:1000px){.layout{grid-template-columns:1fr;padding:15px;gap:15px}nav{position:static;max-height:240px}main{padding:28px}h1{font-size:35px}table{font-size:12px}}
+@media print{@page{size:A4;margin:17mm 15mm}body{background:white;font:10.5pt/1.5 Arial,sans-serif}.layout{display:block;padding:0}nav,.tools{display:none}main{padding:0;box-shadow:none;border-radius:0}h1{font-size:28pt}h2{font-size:17pt;margin-top:25pt;break-after:avoid}h3{font-size:12.5pt;break-after:avoid}p,li{orphans:3;widows:3}table{font-size:8.5pt}th,td{padding:7px}thead{display:table-header-group}tr,pre,.diagram{break-inside:avoid}a{color:#075985;text-decoration:none}}
+</style></head><body><div class="layout"><nav><strong>Study guide</strong><a href="#1-start-with-three-different-problems">1. Start with three different problems</a><a href="#2-intent-search-the-function-behind-the-words">2. Intent: search the function behind the words</a><a href="#3-existing-skills-what-we-studied">3. Existing skills: what we studied</a><a href="#4-retrieval-widen-coverage-without-losing-the-task">4. Retrieval: widen coverage without losing the task</a><a href="#5-lexical-ranking-bm25-and-term-rarity">5. Lexical ranking: BM25 and term rarity</a><a href="#6-rank-fusion-combine-lists-without-comparing-engine-scores">6. Rank fusion: combine lists without comparing engine scores</a><a href="#7-diversification-inspect-something-informative-next">7. Diversification: inspect something informative next</a><a href="#8-evidence-separate-eligibility-from-score">8. Evidence: separate eligibility from score</a><a href="#9-the-agentic-loop">9. The agentic loop</a><a href="#10-four-domain-walkthroughs">10. Four domain walkthroughs</a><a href="#11-what-we-actually-built">11. What we actually built</a><a href="#12-a-real-github-smoke-investigation">12. A real GitHub smoke investigation</a><a href="#13-validation-and-what-it-establishes">13. Validation and what it establishes</a><a href="#14-how-to-test-whether-this-is-actually-better">14. How to test whether this is actually better</a><a href="#15-design-choices-and-tradeoffs">15. Design choices and tradeoffs</a><a href="#16-how-to-use-and-extend-it">16. How to use and extend it</a><a href="#17-glossary-and-a-learning-path">17. Glossary and a learning path</a></nav><main><div class="tools"><a href="SEARCH_STUDY_GUIDE.md">Markdown source</a><a href="../search-with-evidence/SKILL.md">General skill</a><a href="../find-before-build/SKILL.md">GitHub skill</a></div><h1 id="how-an-agent-can-search-better">How an agent can search better</h1>
+<p><strong>A study guide to search intent, repository navigation, evidence, and ranking</strong><br />
+Research and implementation snapshot: <strong>23 October 2026</strong>.</p>
+<p>This guide explains the existing work studied, the useful algorithms behind it, and the design implemented in this project. It is written to teach the ideas rather than replay every search. The HTML edition renders the diagrams and supports printing without an internet connection.</p>
+<p>The concrete output is a portable <strong>Search With Evidence</strong> skill, plus a specialized <strong>Find Before Build</strong> repository skill. They guide an existing agent and its tools. They are not a new web index, a trained ranking model, or evidence that we outperform Google, Brave, or another research agent.</p>
+<h2 id="1-start-with-three-different-problems">1. Start with three different problems</h2>
+<p>People often call all of these “search,” but they require different decisions:</p>
+<table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>What it asks</th>
+<th>Typical failure</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Understand intent</td>
+<td>What result would actually help this person?</td>
+<td>Search the wrong meaning of an example or entity.</td>
+</tr>
+<tr>
+<td>Retrieve candidates</td>
+<td>Where could relevant results be found?</td>
+<td>One vocabulary or one index misses useful alternatives.</td>
+</tr>
+<tr>
+<td>Evaluate results</td>
+<td>Which candidates satisfy the goal, and why?</td>
+<td>Popularity, attractive descriptions, or engine position replace evidence.</td>
+</tr>
+</tbody>
+</table>
+<p>A good retriever can return many relevant pages while still giving a poor recommendation. A good evaluator cannot select a page it never encountered. Better agent search therefore needs both breadth and careful inspection.</p>
+<p><svg class="diagram" role="img" aria-label="The search pipeline" viewBox="0 0 800 429" xmlns="http://www.w3.org/2000/svg">
+<title>The search pipeline</title><defs><marker id="arrow-0" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#64748b"/></marker></defs>
+<text x="22" y="24" font-family="Arial,sans-serif" font-size="17" fill="#334155">The search pipeline</text>
+<line x1="258" y1="86.0" x2="277" y2="86.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-0)"/>
+<line x1="518" y1="86.0" x2="537" y2="86.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-0)"/>
+<line x1="660.0" y1="126" x2="660.0" y2="164" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-0)"/>
+<line x1="542" y1="209.0" x2="523" y2="209.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-0)"/>
+<line x1="282" y1="209.0" x2="263" y2="209.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-0)"/>
+<line x1="140.0" y1="249" x2="140.0" y2="287" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-0)"/>
+<rect x="22" y="46" width="236" height="80" rx="12" fill="#e0f2fe" stroke="#94a3b8"/>
+<text x="140.0" y="91.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">User goal</text>
+<rect x="282" y="46" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="400.0" y="91.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Resolve intent</text>
+<rect x="542" y="46" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="660.0" y="91.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Search hypotheses</text>
+<rect x="542" y="169" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="660.0" y="214.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Merge and deduplicate</text>
+<rect x="282" y="169" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="400.0" y="214.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Inspect sources</text>
+<rect x="22" y="169" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="140.0" y="214.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Evaluate requirements</text>
+<rect x="22" y="292" width="236" height="80" rx="12" fill="#f0fdfa" stroke="#94a3b8"/>
+<text x="140.0" y="337.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Explain decision</text>
+</svg></p>
+<p>The agent's role is to control this process. The search engine supplies observations; it does not know every hidden requirement in the user's mind.</p>
+<h3 id="what-google-teaches-usand-what-it-does-not">What Google teaches us—and what it does not</h3>
+<p>Google publicly describes several systems that connect concepts with queries and content, and its AI Mode describes issuing related searches across subtopics. Those are useful architectural examples, not a public recipe for reproducing Google's complete ranking system. Our design borrows the general separation of interpretation, retrieval, and synthesis; it does not reproduce Google's index, models, training data, or infrastructure. <a href="https://developers.google.com/search/docs/appearance/ranking-systems-guide">Google ranking systems</a>, <a href="https://blog.google/products-and-platforms/products/search/ai-mode-search/">query fan-out</a>.</p>
+<h2 id="2-intent-search-the-function-behind-the-words">2. Intent: search the function behind the words</h2>
+<p>Consider “find platforms like GitHub.” Several interpretations are reasonable:</p>
+<table>
+<thead>
+<tr>
+<th>Intended meaning</th>
+<th>Useful search direction</th>
+<th>Wrong-but-plausible answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Somewhere to host source code</td>
+<td>Git hosting, permissions, collaboration, self-hosting</td>
+<td>A list of interesting GitHub repositories.</td>
+</tr>
+<tr>
+<td>Somewhere to discover projects</td>
+<td>Code discovery, catalogs, topic exploration</td>
+<td>Enterprise Git hosting pricing.</td>
+</tr>
+<tr>
+<td>A tool for team collaboration</td>
+<td>Code review, issues, CI integration</td>
+<td>Any website containing the word “GitHub.”</td>
+</tr>
+</tbody>
+</table>
+<p>The agent should use the surrounding context. “Where people save their repositories” points toward hosting. If context does not distinguish materially different goals, one focused clarification is useful. Routine details can use stated assumptions rather than a questionnaire.</p>
+<p><svg class="diagram" role="img" aria-label="Resolve intent before retrieval" viewBox="0 0 800 505" xmlns="http://www.w3.org/2000/svg"><title>Resolve intent before retrieval</title>
+<defs><marker id="branch-1" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#64748b"/></marker></defs>
+<path d="M 400,115 L 400,154" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-1)"/>
+<path d="M 400,230 L 145,269" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-1)"/>
+<path d="M 400,230 L 655,269" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-1)"/>
+<path d="M 145,345 L 400,384" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-1)"/>
+<path d="M 655,345 L 400,384" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-1)"/>
+<rect x="290" y="45" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="85" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Ambiguous request</text>
+<rect x="290" y="160" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="190" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Context identifies</text>
+<text x="400" y="211" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">role?</text>
+<rect x="35" y="275" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="145" y="305" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Yes: state</text>
+<text x="145" y="326" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">interpretation</text>
+<rect x="545" y="275" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="655" y="315" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">No: ask one question</text>
+<rect x="290" y="390" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="420" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Search the chosen</text>
+<text x="400" y="441" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">function</text>
+</svg></p>
+<h3 id="the-search-brief">The search brief</h3>
+<p>Before a difficult investigation, keep a compact brief containing the goal, result type, must-haves, preferences, exclusions, time/location constraints, and unresolved ambiguity. A course request might require beginner suitability and practical exercises, with a certificate merely preferred. Treating the certificate as mandatory would silently change the task.</p>
+<p>This is also a defense against <strong>intent drift</strong>: the investigation starts with one need but gradually follows interesting adjacent topics. Every query expansion should still connect to the original brief.</p>
+<p>An actual implementation issue illustrates the danger. The repository scorer initially inferred the Go programming language from any occurrence of “go.” “Go through repositories” therefore risked becoming a runtime constraint. The scorer now requires explicit language context for that ambiguous word, and a regression test covers the distinction. A small lexical inference can otherwise distort the whole ranking.</p>
+<h2 id="3-existing-skills-what-we-studied">3. Existing skills: what we studied</h2>
+<p>We inspected public instructions and selected source files. We did <strong>not</strong> run paid research services or benchmark these packages against one another. Their limitations below are source-backed scope/tradeoff observations or explicitly marked inferences, not fabricated runtime defects.</p>
+<p>The inspected revisions are recorded in <code>reports/search-skill-sources.json</code>. Pinned links let a reader revisit the same material even if the upstream projects change.</p>
+<h3 id="tavilys-skill-and-references">Tavily's skill and references</h3>
+<p>The <a href="https://github.com/tavily-ai/skills/blob/778122e5f9c680f541eeceda5a5b36405eb7980c/skills/tavily-best-practices/SKILL.md">Tavily skill</a> explains how to choose among search, extraction, mapping, crawling, and research. Its <a href="https://github.com/tavily-ai/skills/blob/778122e5f9c680f541eeceda5a5b36405eb7980c/skills/tavily-best-practices/references/search.md">search reference</a> discusses query decomposition, filtering, and concurrent requests. The <a href="https://github.com/tavily-ai/skills/blob/778122e5f9c680f541eeceda5a5b36405eb7980c/skills/tavily-best-practices/references/research.md">research reference</a> emphasizes a clear objective and distinguishes output modes.</p>
+<p><strong>Useful lesson:</strong> finding a URL, reading a URL, discovering a site's structure, and synthesizing research are different operations. Choosing the right operation is more effective than making every request a broad crawl.</p>
+<p><strong>Scope limitation for our goal:</strong> these are primarily instructions for a particular provider and its integration. Inference: a person wanting a general search method across existing tools still needs a separate policy for intent resolution, criterion judgments, and final comparison. This is not evidence that Tavily's underlying service lacks those capabilities.</p>
+<h3 id="parallels-web-search-skill">Parallel's web-search skill</h3>
+<p>The <a href="https://github.com/parallel-web/parallel-agent-skills/blob/6c873020213d981984aa8e897cd55e5413d1322f/skills/parallel-web-search/SKILL.md">inspected Parallel skill</a> combines a natural-language objective with optional keyword queries. It preserves results in JSON, distinguishes truncated console output from the saved file, and instructs the agent to check errors and warnings before synthesizing citations.</p>
+<p><strong>Useful lesson:</strong> a failed command and an old output file must not masquerade as a new successful search. Evidence handling matters as much as query wording.</p>
+<p><strong>Scope limitation:</strong> the studied file is a CLI-backed lookup workflow with an explicit provider dependency. Inference: it is not by itself a provider-independent comparative search curriculum. This conclusion concerns that file, not every feature in Parallel's products.</p>
+<h3 id="last30days">last30days</h3>
+<p><a href="https://github.com/mvanhorn/last30days-skill/blob/7fac0fc31ba5212b5ddaa29252d9f7148cec8423/skills/last30days/SKILL.md">last30days</a> is a substantial installable research skill focused on recent discussion across multiple sources. It is more than a short search prompt. We read its planner, fusion, and reranking code.</p>
+<p>The <a href="https://github.com/mvanhorn/last30days-skill/blob/7fac0fc31ba5212b5ddaa29252d9f7148cec8423/skills/last30days/scripts/lib/planner.py">planner</a> contains intent and source-routing logic. The <a href="https://github.com/mvanhorn/last30days-skill/blob/7fac0fc31ba5212b5ddaa29252d9f7148cec8423/skills/last30days/scripts/lib/fusion.py">fusion implementation</a> combines ranked streams, handles duplicate identities, preserves enrichment, and includes diversity/reservation rules. The <a href="https://github.com/mvanhorn/last30days-skill/blob/7fac0fc31ba5212b5ddaa29252d9f7148cec8423/skills/last30days/scripts/lib/rerank.py">reranker</a> supports model judgments and local fallbacks, along with entity-grounding and engagement-related logic.</p>
+<p><strong>Useful lesson:</strong> retrieval, deduplication, pooling, and reranking deserve separate stages. Real systems need careful identity and fallback handling, not just a clever ranking formula.</p>
+<p><strong>Scope tradeoff:</strong> a workflow centered on recent discourse and engagement is useful for recent-discussion questions. Inference: those objectives should not automatically decide the best foundational paper, beginner course, or reusable library. We therefore make criteria and freshness requirements explicit. This is not a claim that last30days is simplistic or that it cannot support other tasks.</p>
+<h3 id="what-is-genuinely-different-in-our-design">What is genuinely different in our design?</h3>
+<p>The algorithms are established. Our engineering emphasis is a portable method that works with the host's tools, checks the intended meaning, separates discovery order from recommendation eligibility, and records criterion-level uncertainty. Whether that combination improves real searches remains a testable question.</p>
+<h2 id="4-retrieval-widen-coverage-without-losing-the-task">4. Retrieval: widen coverage without losing the task</h2>
+<h3 id="query-decomposition">Query decomposition</h3>
+<p>Split a complex need into independently searchable parts. For a PDF merger with bookmarks, the whole product is one lane; PDF manipulation and bookmark preservation are capability lanes. A complete application and a specialist library can both be useful candidates.</p>
+<p>Do not force one repository to implement every requirement. Conversely, do not combine several frameworks just because each matches a keyword: the interfaces and integration cost still matter.</p>
+<h3 id="query-expansion">Query expansion</h3>
+<p>Expansion tries synonyms, functional descriptions, and related terminology. The <a href="https://nlp.stanford.edu/IR-book/html/htmledition/relevance-feedback-and-pseudo-relevance-feedback-1.html">IR textbook's relevance-feedback discussion</a> explains using judged material to refine retrieval. <a href="https://aclanthology.org/2023.emnlp-main.585/">Query2doc</a> studies LLM-generated pseudo-documents as query expansion.</p>
+<p>Our adaptation is conservative: generated vocabulary is a <strong>search hypothesis</strong>, not a fact. Useful terminology found in inspected sources is preferable to invented specificity. Expansion should improve the chance of finding relevant material without silently redefining the question.</p>
+<h3 id="several-kinds-of-navigation">Several kinds of navigation</h3>
+<p>Search results are entry points, not the entire information space:</p>
+<p><svg class="diagram" role="img" aria-label="Follow connections to close a gap" viewBox="0 0 800 306" xmlns="http://www.w3.org/2000/svg">
+<title>Follow connections to close a gap</title><defs><marker id="arrow-2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#64748b"/></marker></defs>
+<text x="22" y="24" font-family="Arial,sans-serif" font-size="17" fill="#334155">Follow connections to close a gap</text>
+<line x1="258" y1="86.0" x2="277" y2="86.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-2)"/>
+<line x1="518" y1="86.0" x2="537" y2="86.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-2)"/>
+<line x1="660.0" y1="126" x2="660.0" y2="164" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-2)"/>
+<line x1="542" y1="209.0" x2="523" y2="209.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-2)"/>
+<line x1="282" y1="209.0" x2="263" y2="209.0" stroke="#64748b" stroke-width="2" marker-end="url(#arrow-2)"/>
+<rect x="22" y="46" width="236" height="80" rx="12" fill="#e0f2fe" stroke="#94a3b8"/>
+<text x="140.0" y="91.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Promising result</text>
+<rect x="282" y="46" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="400.0" y="91.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Read primary evidence</text>
+<rect x="542" y="46" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="660.0" y="91.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Identify a specific gap</text>
+<rect x="542" y="169" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="660.0" y="203.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Follow a useful</text>
+<text x="660.0" y="225.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">connection</text>
+<rect x="282" y="169" width="236" height="80" rx="12" fill="#f8fafc" stroke="#94a3b8"/>
+<text x="400.0" y="214.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Inspect the alternative</text>
+<rect x="22" y="169" width="236" height="80" rx="12" fill="#f0fdfa" stroke="#94a3b8"/>
+<text x="140.0" y="214.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" fill="#0f172a">Update the comparison</text>
+</svg></p>
+<p>Useful connections include repository upstreams and dependencies, papers' references and later citations, course prerequisites and sample assignments, and database records linked by observed identifiers. The connection needs a reason: “could this answer the missing bookmark requirement?” is useful; opening every outgoing link is not.</p>
+<p>An awesome list can be an excellent map while being a poor implementation choice. A review article can expose terminology while the original paper owns an experimental claim. A course marketplace can reveal options while the official syllabus owns prerequisite and access facts.</p>
+<h3 id="github-specific-query-behavior">GitHub-specific query behavior</h3>
+<p>GitHub's default repository search scope includes name, description, and topics; README search requires <code>in:readme</code>. Best-match ordering is available without sorting by stars. The improved helper records the executed query and adds <code>archived:false</code> unless the caller supplies an archived qualifier. It preserves successful query results when another query fails. <a href="https://docs.github.com/en/search-github/searching-on-github/searching-for-repositories">GitHub repository qualifiers</a>, <a href="https://docs.github.com/en/rest/search/search#search-repositories">REST search</a>.</p>
+<p>These filters help retrieval. They cannot prove a library's behavior, license compatibility, or suitability for a specific architecture.</p>
+<h2 id="5-lexical-ranking-bm25-and-term-rarity">5. Lexical ranking: BM25 and term rarity</h2>
+<p>Lexical methods compare words. They are useful, reproducible, and imperfect. A document containing “merging” may concern the same action as “merge,” while a page repeating every task keyword may still be irrelevant.</p>
+<p>The repository helper uses modest morphological normalization and corpus-relative term rarity for coverage features. Metadata matches count more than incidental README mentions. This is an inspectable heuristic, not a semantic model.</p>
+<p>BM25 addresses two problems with raw word counts: repeated occurrences have diminishing benefit, and document length should affect the score. A conventional form is:</p>
+<pre><code class="language-text">BM25(document, query) = sum over query terms:
+  IDF(term) * tf(term, document) * (k1 + 1)
+  ------------------------------------------------------
+  tf(term, document) + k1 * (1 - b + b * length / avg_length)
+</code></pre>
+<p><code>tf</code> is term frequency; <code>IDF</code> measures how uncommon a term is in the compared collection. <code>k1</code> controls saturation; <code>b</code> controls length normalization. The repository helper uses <code>k1 = 1.2</code> and <code>b = 0.75</code>, exposing BM25 as a tie-breaker rather than treating it as proof of task fit. <a href="https://nlp.stanford.edu/IR-book/html/htmledition/probabilistic-information-retrieval-1.html">Stanford's probabilistic IR overview</a>.</p>
+<p><strong>Important limit:</strong> corpus-relative scores change when the candidate pool changes. A score from a course search is not directly comparable with a repository score. No score here is a calibrated probability of success.</p>
+<h2 id="6-rank-fusion-combine-lists-without-comparing-engine-scores">6. Rank fusion: combine lists without comparing engine scores</h2>
+<p>Different engines may return scores with unrelated scales. Adding a provider's “0.9” to another provider's “75” is usually meaningless. Reciprocal Rank Fusion uses positions instead:</p>
+<pre><code class="language-text">RRF(candidate) = sum across ranked lists of 1 / (60 + rank)
+</code></pre>
+<p>Suppose candidate A ranks first in one list and second in another. Its ordinary RRF contribution is <code>1/61 + 1/62</code>, approximately <code>0.03252</code>. Candidate B appears only first in one list, contributing approximately <code>0.01639</code>. RRF rewards repeated retrieval across lists without requiring their raw scores to be calibrated. The original study evaluates fusion on particular retrieval collections; its results do not establish gains for our agent. <a href="https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf">Cormack, Clarke, and Buettcher, 2009</a>.</p>
+<h3 id="our-adaptation-cap-similar-query-families">Our adaptation: cap similar query families</h3>
+<p>Ten near-identical rewrites can retrieve the same weak result ten times. That is repetition, not ten independent confirmations. The general helper groups related searches into query families and keeps only the candidate's strongest contribution within each family. A repeated identical provider/query adds observations without buying another fusion vote.</p>
+<p>This cap is a design choice we implemented and tested for its intended invariant. The cited RRF paper does not prove our modification is better. Family assignments also require judgment: falsely labeling equivalent queries as unrelated defeats the protection.</p>
+<h3 id="discovery-agreement-is-not-factual-agreement">Discovery agreement is not factual agreement</h3>
+<p>Several engines finding one page tells us that page is discoverable. It does not independently confirm the page's claims. Syndicated articles, mirrors, repeated references to the same study, and several discussions of one release need provenance-aware handling.</p>
+<p>The helper normalizes obvious tracking variants while preserving meaningful URL parameters and path case. It does not automatically assume similar titles, two paper versions, or two course IDs are identical.</p>
+<h2 id="7-diversification-inspect-something-informative-next">7. Diversification: inspect something informative next</h2>
+<p>An initial result pool may contain many near-duplicates. Reading all of them can crowd out an unfamiliar but useful alternative. Maximal Marginal Relevance balances relevance and redundancy:</p>
+<pre><code class="language-text">inspection_priority = lambda * relevance
+                      - (1 - lambda) * similarity_to_selected
+</code></pre>
+<p>For an illustrative <code>lambda = 0.75</code>, candidate B has relevance <code>0.98</code> but similarity <code>0.95</code> to an already selected page: priority <code>0.4975</code>. Candidate C has relevance <code>0.90</code> and similarity <code>0.10</code>: priority <code>0.65</code>. C is a more informative next inspection even though B has a slightly better retrieval score.</p>
+<p>The <a href="https://aclanthology.org/X98-1025/">MMR work by Goldstein and Carbonell</a> motivates relevance-plus-novelty selection. Our helper uses a simple token-set Jaccard similarity, not a learned embedding. It produces an <strong>inspection queue</strong>, separate from the final recommendation ranking. Novelty does not establish truth or suitability.</p>
+<h2 id="8-evidence-separate-eligibility-from-score">8. Evidence: separate eligibility from score</h2>
+<p>A result can be highly relevant yet fail one indispensable requirement. A course with excellent exercises may still be inappropriate for a beginner. A popular repository can implement the wrong runtime boundary. A rigorous paper may study the wrong population or dataset.</p>
+<p><svg class="diagram" role="img" aria-label="Eligibility before ranking" viewBox="0 0 800 420" xmlns="http://www.w3.org/2000/svg"><title>Eligibility before ranking</title>
+<defs><marker id="branch-3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#64748b"/></marker></defs>
+<path d="M 400,115 L 400,154" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-3)"/>
+<path d="M 400,230 L 145,299" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-3)"/>
+<path d="M 400,230 L 400,299" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-3)"/>
+<path d="M 400,230 L 655,299" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-3)"/>
+<rect x="290" y="45" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="85" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Candidate and criteria</text>
+<rect x="290" y="160" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="200" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Inspect must-haves</text>
+<rect x="35" y="305" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="145" y="345" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Failure: rejected</text>
+<rect x="290" y="305" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="335" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Gap/conflict:</text>
+<text x="400" y="356" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">provisional</text>
+<rect x="545" y="305" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="655" y="345" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Supported: compare</text>
+</svg></p>
+<p>The general helper accepts these criterion states:</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Meaning</th>
+<th style="text-align: right;">Score contribution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Supported</td>
+<td>An inspected source supports this criterion.</td>
+<td style="text-align: right;">1.00</td>
+</tr>
+<tr>
+<td>Claimed</td>
+<td>A claim was found but not sufficiently established.</td>
+<td style="text-align: right;">0.35</td>
+</tr>
+<tr>
+<td>Unknown</td>
+<td>Evidence is missing or unusable.</td>
+<td style="text-align: right;">0</td>
+</tr>
+<tr>
+<td>Contradicted</td>
+<td>Inspected evidence demonstrates a mismatch.</td>
+<td style="text-align: right;">0</td>
+</tr>
+<tr>
+<td>Conflicted</td>
+<td>Supporting and contradicting observations coexist.</td>
+<td style="text-align: right;">0 until resolved</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>0.35</code> value is an uncalibrated design parameter, not a research-established universal constant. The agent should choose criteria and weights appropriate to the user's task and explain material choices.</p>
+<p>A required contradiction causes rejection regardless of the numerical score. A required unknown, claim, or conflict makes the candidate provisional. This avoids letting strengths on optional dimensions cancel an essential failure.</p>
+<h3 id="a-worked-weighted-score">A worked weighted score</h3>
+<p>Suppose beginner suitability has weight 3 and exercises have weight 2. Suitability is supported, while exercises are only claimed. The score is:</p>
+<pre><code class="language-text">100 * (3 * 1.00 + 2 * 0.35) / (3 + 2) = 74
+</code></pre>
+<p>If exercises are mandatory, the same candidate remains provisional despite its score. If suitability is contradicted, it is rejected for this request even if every optional criterion looks excellent.</p>
+<p>Supported/contradicted inputs require an evidence URL, locator, and note. The helper checks those fields; it cannot establish that the source actually says what the note claims. That semantic judgment remains the host agent's responsibility. Evidence-free support is downgraded to unknown, and conflicting observations are retained.</p>
+<h2 id="9-the-agentic-loop">9. The agentic loop</h2>
+<p>The model controls the next action based on the evidence gathered so far. That is what makes the skill agentic; a fixed “run three queries then take the highest score” sequence does not provide the same adaptation.</p>
+<p><svg class="diagram" role="img" aria-label="The adaptive investigation loop" viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg"><title>The adaptive investigation loop</title>
+<defs><marker id="branch-4" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#64748b"/></marker></defs>
+<path d="M 255,80 L 284,80" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-4)"/>
+<path d="M 510,80 L 539,80" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-4)"/>
+<path d="M 655,115 L 655,194" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-4)"/>
+<path d="M 545,235 L 516,235" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-4)"/>
+<path d="M 290,235 L 261,235" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-4)"/>
+<path d="M 145,200 L 145,170 L 400,170 L 400,121" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-4)"/>
+<path d="M 400,270 L 400,359" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-4)"/>
+<rect x="35" y="45" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="145" y="85" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Search brief</text>
+<rect x="290" y="45" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="85" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Retrieve candidates</text>
+<rect x="545" y="45" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="655" y="85" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Inspect evidence</text>
+<rect x="545" y="200" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="655" y="240" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Update criteria</text>
+<rect x="290" y="200" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="240" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Could a gap change it?</text>
+<rect x="35" y="200" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="145" y="240" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Yes: targeted follow-up</text>
+<rect x="290" y="365" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="405" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">No: explain decision</text>
+</svg></p>
+<p>Practical follow-up rules are straightforward:</p>
+<ul>
+<li>If results answer a different question, revisit the interpretation before adding more queries.</li>
+<li>If a product query is empty, try functional synonyms or a component query; don't erase useful specialist results.</li>
+<li>If a leading candidate's hardest requirement is only claimed, read source/tests or compare a specialist.</li>
+<li>If all sources repeat one announcement, look for an independent assessment or original evidence.</li>
+<li>If a good option fails one hard constraint, search for that function with the constraint made explicit.</li>
+</ul>
+<p>This resembles choosing the next action by expected information value, but we do not compute a probabilistic information-gain model. The agent uses an explicit uncertainty and a plausible next action.</p>
+<p>Stopping means the main criteria are covered, a credible alternative was considered, and remaining gaps are disclosed. It does not mean every possible result was found. Simple lookups should remain simple; exhaustive reviews require an explicit protocol.</p>
+<h2 id="10-four-domain-walkthroughs">10. Four domain walkthroughs</h2>
+<h3 id="a-hosting-platforms">A. Hosting platforms</h3>
+<p>Interpret “like GitHub” through the intended function. For hosting, compare observed repository hosting, collaboration, permission, and deployment requirements. Inspect official feature and access pages rather than a generic alternatives list. If self-hosting is mandatory, an otherwise appealing hosted-only product cannot compensate with unrelated features. Preserve an unknown when a particular deployment mode cannot be established.</p>
+<h3 id="b-beginner-courses">B. Beginner courses</h3>
+<p>Check level, prerequisites, intended outcome, exercises, language, time, learning access, and certificate requirements. Inspect the official syllabus and an accessible sample assignment. A free trial, free audit, paid certificate, and permanently free material are different facts. Independent reviews can inform the learning experience but should not replace official access or syllabus evidence.</p>
+<h3 id="c-research-papers">C. Research papers</h3>
+<p>Separate the research question from fashionable terminology. Search synonyms and relevant scholarly sources, then follow references and citations when available. Read methods, datasets, evaluation, and limitations. Citation count is neither proof of correctness nor proof of fit. Track preprint/publication versions and corrections when material. Reading a benchmark claim does not reproduce it.</p>
+<h3 id="d-connected-databases">D. Connected databases</h3>
+<p>Use the authorized connector or read-only client. Learn the schema and field meanings before applying filters; combine structured constraints with full-text/semantic search only if the backend supports it. Parameterize user values. Do not invent tables, turn samples into exhaustive conclusions, export private collections unnecessarily, or send internal text to public search. The skill supplies a method, not universal database connectivity.</p>
+<h2 id="11-what-we-actually-built">11. What we actually built</h2>
+<p><svg class="diagram" role="img" aria-label="Two independently usable skills" viewBox="0 0 800 565" xmlns="http://www.w3.org/2000/svg"><title>Two independently usable skills</title>
+<defs><marker id="branch-5" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#64748b"/></marker></defs>
+<path d="M 400,115 L 145,174" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-5)"/>
+<path d="M 400,115 L 655,174" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-5)"/>
+<path d="M 145,250 L 145,309" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-5)"/>
+<path d="M 145,385 L 145,444" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-5)"/>
+<path d="M 655,250 L 655,309" stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#branch-5)"/>
+<rect x="290" y="45" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="400" y="85" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Host agent and tools</text>
+<rect x="35" y="180" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="145" y="220" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Search With Evidence</text>
+<rect x="545" y="180" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="655" y="220" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Find Before Build</text>
+<rect x="35" y="315" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="145" y="345" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Intent and</text>
+<text x="145" y="366" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">investigation</text>
+<rect x="545" y="315" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="655" y="345" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">GitHub</text>
+<text x="655" y="366" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">search/inspection</text>
+<rect x="35" y="450" width="220" height="70" rx="12" fill="#eef6fc" stroke="#94a3b8"/>
+<text x="145" y="490" text-anchor="middle" font-family="Arial,sans-serif" font-size="16" fill="#0f172a">Optional local ranking</text>
+</svg></p>
+<h3 id="general-skill">General skill</h3>
+<p><code>search-with-evidence/SKILL.md</code> defines the workflow. Its references hold domain-specific checks, algorithm explanations, evaluation guidance, and the optional JSON schema. <code>scripts/rank_results.py</code> performs no network calls. It combines observed lists, audits criterion fields, retains conflicts, and creates a diversified inspection queue.</p>
+<p>The core workflow has no dependency on the demo UI, a new API key, or a bundled model. It uses whatever authorized search/read tools the host actually provides. It does not grant access the host lacks or remove provider limits.</p>
+<h3 id="repository-specialization">Repository specialization</h3>
+<p><code>find-before-build</code> remains independently usable. Its optional scripts now support broader query batches, partial-query results, explicit search provenance, mixed-round evidence merging, capability-aware features, and commit-pinned inspection of directories and files. Literal term lookup returns bounded passages with line links. Source code is not executed.</p>
+<p>The preliminary repository weights are task/capability relevance 45, integration 20, license 15, activity 10, maintenance 5, and adoption 5. Weak relevance, disabled/archived repositories, and resource indexes have explicit caps. The agent still needs to inspect and semantically compare the evidence.</p>
+<p>The existing Python application consumes these helpers for compatibility. Its controller remains a bounded program; merely calling improved helpers does not give that controller every adaptive behavior in the portable skill. The host agent following the skill supplies the wider investigation loop.</p>
+<h2 id="12-a-real-github-smoke-investigation">12. A real GitHub smoke investigation</h2>
+<p>We ran public repository searches for PDF bookmark/merge capability, collected six candidates, ranked the metadata, and inspected the observed <code>py-pdf/pypdf</code> result. Directory listing revealed source/test paths; a follow-up read retrieved relevant files and bounded line passages at commit <code>fd379e69be44dd91acb5f1d62ba1179e9cbc20ca</code>.</p>
+<p>Observed paths included <a href="https://github.com/py-pdf/pypdf/blob/fd379e69be44dd91acb5f1d62ba1179e9cbc20ca/pypdf/_writer.py">the writer implementation</a>, <a href="https://github.com/py-pdf/pypdf/blob/fd379e69be44dd91acb5f1d62ba1179e9cbc20ca/tests/test_merger.py">merger tests</a>, README, package configuration, and license text. We <strong>read</strong> those files; we did not execute the library or its tests.</p>
+<p>The helper left GitHub's <code>NOASSERTION</code> license metadata visible rather than inventing a normalized license. Inspection made the actual license text available for review. This is a useful example of why “metadata unknown” and “nothing can be learned” are different states. No automatic legal conclusion or task-level correctness claim follows.</p>
+<p>This run confirms that the search-to-navigation-to-file-evidence path operates on a real repository. It does not measure retrieval recall, compare against a baseline agent, or prove the selected library is best. The six-result pool itself contained weak candidates, which is expected during broad discovery.</p>
+<h2 id="13-validation-and-what-it-establishes">13. Validation and what it establishes</h2>
+<p>The regression suite checks behavior rather than whether a prompt contains particular slogans. New checks cover:</p>
+<ul>
+<li>relevance/runtime fit beating popularity and resource indexes;</li>
+<li>specialist component evidence and merged observations;</li>
+<li>preserving good queries when another query fails;</li>
+<li>query qualifiers not creating false related-cache matches;</li>
+<li>pinned source reads, directory navigation, and retained file errors;</li>
+<li>tracking-URL deduplication without dropping meaningful parameters;</li>
+<li>repeated queries not buying additional fusion votes;</li>
+<li>required failures overriding a favorable retrieval position;</li>
+<li>unverified support remaining unknown and contradictory evidence remaining visible;</li>
+<li>complementary inspection choices under MMR;</li>
+<li>invalid numeric judgments and unknown criterion IDs being rejected.</li>
+</ul>
+<p>Both skill packages also pass the skill metadata validator. The full project test count and latest verification results are recorded in <code>PROJECT_GUIDE.md</code>; these include the existing harness/UI tests as well as the new skill tests.</p>
+<p>These are correctness and smoke checks. They are not an independent demonstration of better search quality, better teaching recommendations, or superiority over existing tools.</p>
+<h2 id="14-how-to-test-whether-this-is-actually-better">14. How to test whether this is actually better</h2>
+<p>Use the same host model, available tools, tasks, and comparable effort with and without the skill. Include ambiguous requests, courses with misleading marketing, low-popularity specialist repositories, research questions with competing methods, and records with missing evidence.</p>
+<p>Keep candidate pools and search traces. Have an assessor who does not know which workflow produced the output grade relevance and evidence quality. Do not define the “correct” answer as whatever our method already selected.</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>What it measures</th>
+<th>Important limitation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Precision@k</td>
+<td>Fraction of the first k results that qualify.</td>
+<td>Requires an explicit definition of qualifying.</td>
+</tr>
+<tr>
+<td>nDCG@k</td>
+<td>Whether strongly relevant results rank above weaker ones.</td>
+<td>Needs graded relevance judgments.</td>
+</tr>
+<tr>
+<td>Required-criterion coverage</td>
+<td>How many must-haves have adequate evidence.</td>
+<td>Claimed support must not be counted as verified behavior.</td>
+</tr>
+<tr>
+<td>Claim support rate</td>
+<td>Whether decisive statements are backed by inspected sources.</td>
+<td>A citation can exist yet fail to support the statement.</td>
+</tr>
+<tr>
+<td>Time and tool calls</td>
+<td>Effort required to reach a useful result.</td>
+<td>Faster is not automatically better if quality falls.</td>
+</tr>
+<tr>
+<td>User decision usefulness</td>
+<td>Whether the shortlist helps the actual decision.</td>
+<td>Usually needs human study and context.</td>
+</tr>
+</tbody>
+</table>
+<p>For nDCG, discounted gain gives more credit to relevant items near the top, then normalizes against an ideal ordering for the judged pool. Full open-web recall is normally unknown because the entire set of relevant pages is unknown. <a href="https://nlp.stanford.edu/IR-book/html/htmledition/information-retrieval-system-evaluation-1.html">IR evaluation foundations</a>.</p>
+<p>Run ablations: remove intent checking, remove query-family capping, remove evidence gating, or remove diversification one at a time. This helps identify whether an added mechanism improves results or merely adds work. A prospective controlled comparison is still future work.</p>
+<h2 id="15-design-choices-and-tradeoffs">15. Design choices and tradeoffs</h2>
+<table>
+<thead>
+<tr>
+<th>Choice</th>
+<th>Benefit</th>
+<th>Cost or limit</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Host-tool-first skill</td>
+<td>Portable method without requiring a new service.</td>
+<td>Tool availability and access still vary by host.</td>
+</tr>
+<tr>
+<td>Inspectable deterministic helpers</td>
+<td>Easy to audit, reproduce, and test.</td>
+<td>Lexical similarity misses semantic relationships.</td>
+</tr>
+<tr>
+<td>Model semantic comparison</td>
+<td>Can interpret intent and compare nuanced evidence.</td>
+<td>Model judgments can still be biased or wrong.</td>
+</tr>
+<tr>
+<td>Explicit criterion states</td>
+<td>Missing evidence and contradictions stay visible.</td>
+<td>Requires disciplined evidence collection.</td>
+</tr>
+<tr>
+<td>Query-family-capped fusion</td>
+<td>Equivalent rewrites cannot mechanically multiply votes.</td>
+<td>Family assignment is subjective and the quality effect is unproven.</td>
+</tr>
+<tr>
+<td>Separate inspection queue</td>
+<td>Encourages informative alternatives.</td>
+<td>Lexical novelty is an imperfect proxy for useful novelty.</td>
+</tr>
+<tr>
+<td>Commit-pinned repository reads</td>
+<td>Links remain tied to the inspected revision.</td>
+<td>Inspected code may differ from a release or current default branch.</td>
+</tr>
+</tbody>
+</table>
+<p>Embeddings and trained learning-to-rank models are not bundled. They could help some tasks, but would introduce model/runtime dependencies and require meaningful evaluation. The current skill uses the host's reasoning rather than pretending that an untrained weighted sum is a learned ranker.</p>
+<h2 id="16-how-to-use-and-extend-it">16. How to use and extend it</h2>
+<p>Copy a complete skill folder into an agent's supported skills location, or load its <code>SKILL.md</code> as instructions in a host that supports that workflow. Keep the references and optional scripts beside it. No competitor package has been installed or made a runtime dependency.</p>
+<p>Example general invocation: “Use search-with-evidence to find beginner-friendly database courses with substantial exercises; compare prerequisites and actual learning access.” Example repository invocation: “Use find-before-build to investigate libraries for preserving PDF bookmarks during merging.”</p>
+<p>The core skill can run without the Python helpers. For reproducible local analysis, follow the exact input schema and commands in <code>search-with-evidence/references/evidence-format.md</code>. The repository commands and navigation pattern are in <code>find-before-build/references/search-playbook.md</code>.</p>
+<p>Extend domain rubrics when a task needs them; do not accumulate unrelated rules in the main skill. Keep every new feature tied to a demonstrated failure or a clear user need. Add meaningful tests, record the effect, and retain the distinction between a promising design and a measured improvement.</p>
+<h2 id="17-glossary-and-a-learning-path">17. Glossary and a learning path</h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Plain meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Information need</td>
+<td>The underlying question or decision, beyond its wording.</td>
+</tr>
+<tr>
+<td>Recall</td>
+<td>How much relevant material a search finds.</td>
+</tr>
+<tr>
+<td>Precision</td>
+<td>How much returned material is relevant.</td>
+</tr>
+<tr>
+<td>Query expansion</td>
+<td>Adding useful alternate terminology.</td>
+</tr>
+<tr>
+<td>Relevance feedback</td>
+<td>Revising retrieval using judgments about found material.</td>
+</tr>
+<tr>
+<td>Retrieval</td>
+<td>Finding a candidate pool.</td>
+</tr>
+<tr>
+<td>Reranking</td>
+<td>Reordering candidates for the actual task.</td>
+</tr>
+<tr>
+<td>BM25</td>
+<td>A lexical retrieval score with frequency saturation and length normalization.</td>
+</tr>
+<tr>
+<td>Rank fusion</td>
+<td>Combining ranked lists from several searches/systems.</td>
+</tr>
+<tr>
+<td>MMR</td>
+<td>Balancing relevance and redundancy during selection.</td>
+</tr>
+<tr>
+<td>Provenance</td>
+<td>Where an observation came from and how it was obtained.</td>
+</tr>
+<tr>
+<td>Eligibility</td>
+<td>Whether a result satisfies indispensable constraints.</td>
+</tr>
+<tr>
+<td>Calibration</td>
+<td>Whether a numerical score corresponds to real-world probabilities or outcomes.</td>
+</tr>
+<tr>
+<td>Ablation</td>
+<td>Removing a component to study its contribution.</td>
+</tr>
+</tbody>
+</table>
+<p>For a first reading, study intent and the evidence states before the formulas. Then work through RRF and MMR by hand. Finally inspect the helper outputs, run the regression cases, and design a controlled comparison. The most important lesson is that <strong>retrieval rank, evidence strength, and task suitability are different quantities</strong>.</p></main></div></body></html>

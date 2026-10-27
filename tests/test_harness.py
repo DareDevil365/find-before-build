@@ -1,13 +1,43 @@
 """Regression checks for truthful executor status and bounded query terms."""
 
 import unittest
+import argparse
+import contextlib
+import io
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
 
-from harness import choose_decision, classify_aider_result, delivery_issues, implementation_written, plan_search, queries_for, select_gemini_api_key, select_gemini_api_keys, structural_issues, workspace_context
-from harness_core.backends import GemmaAPI, Reply, RotatingGeminiAPI
+from harness import choose_decision, classify_aider_result, delivery_issues, implementation_written, plan_search, queries_for, select_gemini_api_key, select_gemini_api_keys, structural_issues, workspace_context, requested_files, snapshot, run
+from harness_core.backends import GemmaAPI, Reply, RotatingGeminiAPI, ToolCall
 
 
 class HarnessTests(unittest.TestCase):
+    def test_nested_requested_file_finishes_without_root_duplicate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = argparse.Namespace(engine="native", task="Create src/hello.py that prints hello", workspace=root, backend="koboldcpp", model="test", no_commands=True, no_questions=True, question_channel="terminal", clarify=False, no_discovery=True, max_turns=3, record=None, base_url="http://unused")
+            replies = [Reply(tool_calls=[ToolCall("a", "write_file", {"path": "src/hello.py", "content": "print('hello')\n"})]), Reply(text="Done")]
+            with patch("harness.load_local_env"), patch("harness.KoboldCpp.chat", side_effect=replies), contextlib.redirect_stdout(io.StringIO()):
+                result = run(args)
+            self.assertEqual(result["status"], "finished")
+            self.assertEqual(result["written_files"], ["src/hello.py"])
+            self.assertEqual(result["completion_issues"], [])
+        self.assertEqual(requested_files(r"Create src\main.py and docs/README.md"), ["src/main.py", "docs/README.md"])
+
+    def test_binary_and_large_assets_use_filesystem_for_existence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "index.html").write_text('<img src="logo.png"><script src="large.js"></script><img src="missing.png">')
+            (root / "logo.png").write_bytes(b"\x89PNG\r\n\xff")
+            (root / "large.js").write_text(" " * 100_001)
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "package.json").write_text("not valid JSON")
+            files = snapshot(root)
+            self.assertNotIn("node_modules/package.json", files)
+            self.assertEqual(structural_issues(files, root), ["index.html: missing local asset missing.png"])
+            self.assertEqual(structural_issues({"templates/index.html": '<link rel="stylesheet" href="{{ url_for(\'static\', filename=\'style.css\') }}">'}, root), [])
+
     def test_workspace_context_is_bounded_and_skips_secret_files(self):
         context = workspace_context({"app.py": "print('ready')", ".env": "SECRET=hidden", "large.js": "x" * 9000}, limit=100)
         self.assertIn("app.py", context)

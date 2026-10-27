@@ -109,7 +109,9 @@ class UiTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertFalse(state["running"])
-        self.assertEqual(state["workspace"], str((self.root / "runs" / ("ui-" + job_id) / "workspace").resolve()))
+        self.assertEqual(job_id, "simple-thing")
+        self.assertEqual(state["workspace"], str((self.root / "Results" / job_id).resolve()))
+        self.assertTrue((self.root / "runs" / "builds" / job_id / "record.json").is_file())
         self.assertEqual(state["result"]["status"], "finished")
         self.assertEqual(state["stage"], "complete")
         self.assertEqual(state["candidates"][0]["name"], "example/reusable")
@@ -124,7 +126,7 @@ class UiTests(unittest.TestCase):
             deadline = time.monotonic() + 6
             while time.monotonic() < deadline:
                 _, state = self.request("/api/state?id=" + job_id)
-                if any(item["status"] == "ready" for item in state["runtime_services"]):
+                if any(item["name"] == "Flask backend" and item["status"] == "ready" for item in state["runtime_services"]):
                     break
                 time.sleep(0.1)
             backend = next(item for item in state["runtime_services"] if item["name"] == "Flask backend")
@@ -175,8 +177,9 @@ class UiTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_web_delivery_and_fast_mode_flags(self) -> None:
-        status, started = self.request("/api/start", {"task": "Create a study app", "backend": "gemini-api", "no_questions": True, "web_app": True})
+        status, started = self.request("/api/start", {"task": "Create a study app", "name": "Math Tutor", "backend": "gemini-api", "no_questions": True, "web_app": True})
         self.assertEqual(status, 200)
+        self.assertEqual(started["id"], "math-tutor")
         job = self.server.manager.get(started["id"])
         args = job.process.args
         self.assertIn("--no-questions", args)
@@ -195,6 +198,7 @@ class UiTests(unittest.TestCase):
         self.assertEqual(self.request("/api/start", {"task": "x", "backend": "koboldcpp"})[0], 400)
         self.assertEqual(self.request("/api/start", {"task": "Build something", "backend": "unknown"})[0], 400)
         self.assertEqual(self.request("/api/answer", {"id": "missing", "answer": "Yes"})[0], 400)
+        self.assertEqual(self.request("/api/start", {"task": "Build something", "backend": "koboldcpp", "name": ["invalid"]})[0], 400)
 
 
 if __name__ == "__main__":

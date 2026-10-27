@@ -2,6 +2,10 @@
 
 This document describes the intended workflow and component contracts. [PROJECT_GUIDE.md](PROJECT_GUIDE.md) distinguishes tested behavior from work still in progress.
 
+## Portable skills
+
+The current repository also ships `search-with-evidence`, a host-tool-first general investigation skill, and an expanded `find-before-build` repository specialization. Their instructions and optional scripts are self-contained and do not depend on this application. The host agent performs adaptive query planning, source inspection, and semantic comparison. The general helper separates family-capped discovery fusion, evidence-gated recommendation ranking, and an MMR inspection queue. The application controller remains a bounded workflow and should not be confused with the full portable agent behavior. See [the study guide](docs/SEARCH_STUDY_GUIDE.md) and [PROJECT_GUIDE.md](PROJECT_GUIDE.md) for the implemented state and validation limits.
+
 ## Goal
 
 Given “build a CSV cleaner,” the controller gathers a few relevant GitHub repositories, shows a sourced reuse decision, and then lets a model build and check a result in a chosen workspace. The judge should see the evidence, decision, file changes, and check outcome in one run.
@@ -43,7 +47,7 @@ Discovery is required for a normal build. The evaluation runner may disable disc
 
 ## Portable discovery skill
 
-`find-before-build/SKILL.md` uses the [Agent Skills specification](https://agentskills.io/specification), including `name` and `description` YAML frontmatter. The controller reads this file on discovery runs, checks the expected name metadata, and includes its instructions in the model's decision prompt. `scripts/search_repos.py` uses the GitHub API and optional `GITHUB_TOKEN`; it does not clone or run candidates. It records missing fields and retrieval times. `scripts/score_repo.py` applies the initial 100-point weights: license 25, recency 25, README fit 20, issue health 15, stars 15. Scores rank candidates but cannot resolve task fit or integration cost alone. A missing license is unknown, never silently permissive.
+`find-before-build/SKILL.md` uses the [Agent Skills specification](https://agentskills.io/specification), including `name` and `description` YAML frontmatter. The controller reads this file on discovery runs, checks the expected name metadata, and includes its instructions in the model's decision prompt. `scripts/search_repos.py` uses the GitHub API and optional `GITHUB_TOKEN`; it does not clone or run candidates. It records missing fields and retrieval times. `scripts/score_repo.py` applies the initial 100-point weights: task/capability relevance 45, integration 20, license 15, activity 10, issue health 5, adoption 5. Scores rank candidates but cannot resolve task fit or integration cost alone. A missing license is unknown, never silently permissive.
 
 A decision should include a chosen action, repository if applicable, evidence URLs, reasons, integration steps, unknowns, and effort estimate. Only repositories present in the evidence set are eligible. Invalid model output should be retried within a fixed budget and then reported as a failure.
 
@@ -86,6 +90,9 @@ Hack/
     SKILL.md                portable workflow
     scripts/search_repos.py  GitHub retrieval and cache
     scripts/score_repo.py    deterministic scoring
+  Results/<program-name>/  generated programs (ignored)
+  runs/builds/<name>/      build metadata and runtime logs (ignored)
+  reports/                 committed audit and evaluation evidence
   tests/                   focused behavior checks
 ```
 
@@ -95,7 +102,7 @@ The controller and skill use Python's standard library where practical to reduce
 
 Run the same neutral task, model, settings, clean starting state, and acceptance check twice: with discovery and without. The discovery arm deliberately adds repository evidence and a reuse decision to the model context. Record wall time including search, reported tokens if available, model-written lines, tool calls, and acceptance result. `time_to_working_seconds` is harness plus acceptance-check time for a passing arm and `null` on failure. Aider counts come from console output and can be rounded. Each run uses an isolated workspace. A one-task comparison is a demonstration, not proof that discovery generally improves coding. Missing measurements are explicit; failures remain in the report. Do not publish illustrative numbers as measured results.
 
-The first passing paired comparison is [the Gemma calculator result](results/gemma-calculator-summary.json): both arms passed, while discovery took 28.618 seconds to a working result versus 11.410 seconds without discovery. The model chose `build_fresh` after examining five candidates. This small task shows search overhead, not an improvement claim. The reproducible task definition is [examples/calculator.eval.json](examples/calculator.eval.json).
+The first passing paired comparison is [the Gemma calculator result](reports/gemma-calculator-summary.json): both arms passed, while discovery took 28.618 seconds to a working result versus 11.410 seconds without discovery. The model chose `build_fresh` after examining five candidates. This small task shows search overhead, not an improvement claim. The reproducible task definition is [examples/calculator.eval.json](examples/calculator.eval.json).
 
 ## Local environment and limits
 

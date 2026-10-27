@@ -1,0 +1,60 @@
+[
+  {
+    "repository": "mvanhorn/last30days-skill",
+    "commit": "7fac0fc31ba5212b5ddaa29252d9f7148cec8423",
+    "files": [
+      {
+        "path": "skills/last30days/SKILL.md",
+        "url": "https://github.com/mvanhorn/last30days-skill/blob/7fac0fc31ba5212b5ddaa29252d9f7148cec8423/skills/last30days/SKILL.md",
+        "bytes": 31689
+      },
+      {
+        "path": "skills/last30days/scripts/lib/planner.py",
+        "url": "https://github.com/mvanhorn/last30days-skill/blob/7fac0fc31ba5212b5ddaa29252d9f7148cec8423/skills/last30days/scripts/lib/planner.py",
+        "bytes": 47456
+      },
+      {
+        "path": "skills/last30days/scripts/lib/fusion.py",
+        "url": "https://github.com/mvanhorn/last30days-skill/blob/7fac0fc31ba5212b5ddaa29252d9f7148cec8423/skills/last30days/scripts/lib/fusion.py",
+        "bytes": 20398
+      },
+      {
+        "path": "skills/last30days/scripts/lib/rerank.py",
+        "url": "https://github.com/mvanhorn/last30days-skill/blob/7fac0fc31ba5212b5ddaa29252d9f7148cec8423/skills/last30days/scripts/lib/rerank.py",
+        "bytes": 55498
+      }
+    ]
+  },
+  {
+    "repository": "tavily-ai/skills",
+    "commit": "778122e5f9c680f541eeceda5a5b36405eb7980c",
+    "files": [
+      {
+        "path": "skills/tavily-best-practices/SKILL.md",
+        "url": "https://github.com/tavily-ai/skills/blob/778122e5f9c680f541eeceda5a5b36405eb7980c/skills/tavily-best-practices/SKILL.md",
+        "bytes": 4377
+      },
+      {
+        "path": "skills/tavily-best-practices/references/search.md",
+        "url": "https://github.com/tavily-ai/skills/blob/778122e5f9c680f541eeceda5a5b36405eb7980c/skills/tavily-best-practices/references/search.md",
+        "bytes": 12088
+      },
+      {
+        "path": "skills/tavily-best-practices/references/research.md",
+        "url": "https://github.com/tavily-ai/skills/blob/778122e5f9c680f541eeceda5a5b36405eb7980c/skills/tavily-best-practices/references/research.md",
+        "bytes": 10090
+      }
+    ]
+  },
+  {
+    "repository": "parallel-web/parallel-agent-skills",
+    "commit": "6c873020213d981984aa8e897cd55e5413d1322f",
+    "files": [
+      {
+        "path": "skills/parallel-web-search/SKILL.md",
+        "url": "https://github.com/parallel-web/parallel-agent-skills/blob/6c873020213d981984aa8e897cd55e5413d1322f/skills/parallel-web-search/SKILL.md",
+        "bytes": 5304
+      }
+    ]
+  }
+]

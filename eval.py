@@ -82,6 +82,7 @@ def _write_count(record: dict) -> int:
 
 
 def run_arm(*, label: str, spec: dict, workspace: Path, output: Path, backend: str, engine: str, model: str | None, max_turns: int, timeout: int) -> dict:
+    workspace, output = workspace.resolve(), output.resolve()
     prepare_workspace(workspace, spec.get("seed_files", {}))
     record_path = output / f"{label}-record.json"
     argv = [sys.executable, str(ROOT / "harness.py"), spec["task"], "--workspace", str(workspace), "--backend", backend, "--engine", engine, "--no-commands", "--no-questions", "--record", str(record_path), "--max-turns", str(max_turns)]
@@ -138,7 +139,7 @@ def main() -> int:
         spec = load_spec(args.spec)
         if args.max_turns < 1 or args.timeout < 1:
             raise ValueError("--max-turns and --timeout must be positive")
-        output = args.output or ROOT / "runs" / ("eval-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+        output = (args.output or ROOT / "runs" / ("eval-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))).resolve()
         if output.exists():
             raise FileExistsError(f"Output directory already exists: {output}")
         output.mkdir(parents=True)
@@ -162,7 +163,7 @@ def main() -> int:
         for arm in arms:
             print(f"{arm['label']}: acceptance={arm['acceptance_passed']} wall={arm['wall_seconds']}s tokens={arm['token_usage'].get('total_tokens', 'unknown')} writes={arm['write_count']}")
         print(f"Report: {report_path}")
-        return 0 if all(arm["harness_exit_code"] == 0 for arm in arms) else 1
+        return 0 if all(arm["acceptance_passed"] for arm in arms) else 1
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"eval: {exc}", file=sys.stderr)
         return 2

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Search With Evidence"
+  short_description: "Investigate sources and rank results against your goal"
+  default_prompt: "Use $search-with-evidence to clarify my search goal, investigate the best sources, and compare results with evidence."
